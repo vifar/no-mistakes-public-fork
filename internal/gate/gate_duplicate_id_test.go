@@ -15,6 +15,8 @@ import (
 
 	gitpkg "github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+
+	"github.com/kunchenguid/no-mistakes/internal/db"
 )
 
 // This file holds the regression tests for issue #160: an init from a second
@@ -220,6 +222,25 @@ func TestInitRefusesDuplicateRepoIDWithoutTouchingTheRegisteredGate(t *testing.T
 		t.Errorf("the refusal does not name the registered path %q: %v", moved, err)
 	}
 
+	// The refusal must be typed, so a caller can tell it from any other
+	// init failure.
+	var dup *DuplicateRepoIDError
+	if !errors.As(err, &dup) {
+		t.Fatalf("init error = %v (%T), want a *gate.DuplicateRepoIDError", err, err)
+	}
+	if dup.ID != registered.ID {
+		t.Errorf("duplicate error ID = %q, want %q", dup.ID, registered.ID)
+	}
+	if dup.RegisteredPath != moved {
+		t.Errorf("duplicate error registered path = %q, want %q", dup.RegisteredPath, moved)
+	}
+	if dup.CallerPath != workDir {
+		t.Errorf("duplicate error caller path = %q, want %q", dup.CallerPath, workDir)
+	}
+	if dup.GateDir != gateDir {
+		t.Errorf("duplicate error gate dir = %q, want %q", dup.GateDir, gateDir)
+	}
+
 	// The shared gate must be byte-for-byte what it was.
 	afterTree := treeSnapshot(t, gateDir)
 	compareSnapshots(t, "shared gate", beforeTree, afterTree)
@@ -367,4 +388,91 @@ func TestInitProvisionFailureRemovesOnlyWhatThisAttemptCreated(t *testing.T) {
 	otherAfter := treeSnapshot(t, otherGate)
 	compareSnapshots(t, "other gate", otherBefore, otherAfter)
 	assertGateWorktreeUsable(t, otherWorktree, otherCommit)
+}
+
+// TestInitInsertFailureRemovesOnlyWhatThisAttemptCreated injects the
+// registration failure the duplicate ID produced (the UNIQUE constraint on
+// repos.id) and checks the same rollback rule on the other path: the gate
+// directory this attempt created goes, the one that was already there stays.
+//
+// This is the failure that destroyed the shared gate in issue #160: the
+// insert failed, and the rollback removed a gate directory this attempt had
+// not created.
+func TestInitInsertFailureRemovesOnlyWhatThisAttemptCreated(t *testing.T) {
+	ctx := context.Background()
+	nmRoot := t.TempDir()
+	p := paths.WithRoot(nmRoot)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	d := openTestDB(t, p)
+
+	oldInsert := insertRepoRecord
+	insertRepoRecord = func(*db.DB, string, string, string, string, string) (*db.Repo, error) {
+		return nil, errors.New("insert repo: constraint failed: UNIQUE constraint failed: repos.id (1555)")
+	}
+	t.Cleanup(func() { insertRepoRecord = oldInsert })
+
+	// A checkout whose gate directory already exists.
+	orphanWork := setupTestRepo(t)
+	orphanGate := p.RepoDir(repoID(orphanWork))
+	if out, err := exec.Command("git", "init", "--bare", orphanGate).CombinedOutput(); err != nil {
+		t.Fatalf("init orphan gate: %v: %s", err, out)
+	}
+
+	// A checkout with no gate directory at all.
+	freshWork := setupTestRepo(t)
+	freshGate := p.RepoDir(repoID(freshWork))
+
+	if _, _, err := Init(ctx, d, p, orphanWork); err == nil {
+		t.Fatal("init must fail with the injected registration failure")
+	}
+	if _, err := os.Stat(orphanGate); err != nil {
+		t.Errorf("a pre-existing gate directory was removed by a failed init: %v", err)
+	}
+
+	if _, _, err := Init(ctx, d, p, freshWork); err == nil {
+		t.Fatal("init must fail with the injected registration failure")
+	}
+	if _, err := os.Stat(freshGate); !os.IsNotExist(err) {
+		t.Errorf("the gate directory this attempt created still exists at %s", freshGate)
+	}
+	// The remote this attempt added is gone again.
+	if _, err := gitpkg.GetRemoteURL(ctx, freshWork, RemoteName); err == nil {
+		t.Error("the failed init left its gate remote behind")
+	}
+}
+
+// TestInitInsertFailureLeavesAGateAnotherRegistrationOwns covers the race
+// the rollback has to survive: a concurrent init won the registration for the
+// same repo ID between this attempt's ownership check and its insert. The
+// directory is then the winner's, and the loser must not remove it.
+func TestInitInsertFailureLeavesAGateAnotherRegistrationOwns(t *testing.T) {
+	ctx := context.Background()
+	nmRoot := t.TempDir()
+	p := paths.WithRoot(nmRoot)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	d := openTestDB(t, p)
+
+	workDir := setupTestRepo(t)
+	gateDir := p.RepoDir(repoID(workDir))
+
+	oldInsert := insertRepoRecord
+	insertRepoRecord = func(database *db.DB, id, workingPath, upstreamURL, forkURL, branch string) (*db.Repo, error) {
+		// The winner of the race registers the same ID first.
+		if _, err := database.InsertRepoWithIDAndFork(id, filepath.Join(filepath.Dir(workingPath), "winner"), upstreamURL, forkURL, branch); err != nil {
+			t.Fatalf("insert winning registration: %v", err)
+		}
+		return nil, errors.New("insert repo: constraint failed: UNIQUE constraint failed: repos.id (1555)")
+	}
+	t.Cleanup(func() { insertRepoRecord = oldInsert })
+
+	if _, _, err := Init(ctx, d, p, workDir); err == nil {
+		t.Fatal("init must fail with the injected registration failure")
+	}
+	if _, err := os.Stat(gateDir); err != nil {
+		t.Errorf("the gate of the registration that won the race was removed by the loser: %v", err)
+	}
 }
