@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	gitpkg "github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
@@ -186,6 +187,14 @@ func TestInitRefusesDuplicateRepoIDWithoutTouchingTheRegisteredGate(t *testing.T
 	gateDir := p.RepoDir(registered.ID)
 	commit, gateWorktree := seedGateSentinel(t, gateDir)
 
+	// The registration has run history of its own before anything else
+	// happens, so the read-back below proves that history survived rather
+	// than that a new run can be written.
+	seededRun, err := d.InsertRun(registered.ID, "feature", "headsha", "basesha")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+
 	// The checkout moves. Init from the new path reattaches the same gate
 	// and keeps the repo ID the ORIGINAL path derived.
 	moved := filepath.Join(filepath.Dir(workDir), "moved")
@@ -260,15 +269,12 @@ func TestInitRefusesDuplicateRepoIDWithoutTouchingTheRegisteredGate(t *testing.T
 	if dbRepo.WorkingPath != moved {
 		t.Errorf("registered working path = %q, want %q", dbRepo.WorkingPath, moved)
 	}
-	if _, err := d.InsertRun(registered.ID, "feature", "headsha", "basesha"); err != nil {
-		t.Fatalf("insert run: %v", err)
-	}
 	runs, err := d.GetRunsByRepo(registered.ID)
 	if err != nil {
 		t.Fatalf("get runs: %v", err)
 	}
-	if len(runs) != 1 {
-		t.Errorf("runs after the refused init = %d, want 1", len(runs))
+	if len(runs) != 1 || runs[0].ID != seededRun.ID {
+		t.Errorf("runs after the refused init = %+v, want only the seeded run %q", runs, seededRun.ID)
 	}
 
 	// The refused checkout must not have been registered either.
@@ -351,12 +357,14 @@ func TestInitProvisionFailureRemovesOnlyWhatThisAttemptCreated(t *testing.T) {
 	otherCommit, otherWorktree := seedGateSentinel(t, otherGate)
 	otherBefore := treeSnapshot(t, otherGate)
 
-	// A checkout whose gate directory already exists: an orphan gate with
-	// no registration, which this init did not create either.
-	orphanWork := setupTestRepo(t)
-	orphanGate := p.RepoDir(repoID(orphanWork))
-	if out, err := exec.Command("git", "init", "--bare", orphanGate).CombinedOutput(); err != nil {
-		t.Fatalf("init orphan gate: %v: %s", err, out)
+	// This checkout's own gate, already there although its registration is
+	// gone (the registry was lost): its gate remote points at it, so init
+	// adopts and repairs it - and a failed repair must not remove it.
+	ownWork := setupTestRepo(t)
+	ownGate := p.RepoDir(repoID(ownWork))
+	initBareAt(t, ownGate)
+	if err := gitpkg.AddRemote(ctx, ownWork, RemoteName, ownGate); err != nil {
+		t.Fatalf("wire own gate: %v", err)
 	}
 
 	// A checkout with no gate directory at all: whatever directory appears
@@ -370,19 +378,26 @@ func TestInitProvisionFailureRemovesOnlyWhatThisAttemptCreated(t *testing.T) {
 	}
 	t.Cleanup(func() { ensureGateHooksPathIsolation = oldEnsure })
 
-	for _, work := range []string{orphanWork, freshWork} {
-		if _, _, err := Init(ctx, d, p, work); err == nil {
-			t.Fatalf("init at %s must fail with the injected provisioning failure", work)
+	for _, work := range []string{ownWork, freshWork} {
+		if _, _, err := Init(ctx, d, p, work); err == nil || !strings.Contains(err.Error(), "injected provisioning failure") {
+			t.Fatalf("init at %s must fail with the injected provisioning failure, got %v", work, err)
 		}
 	}
 
-	// The gate this attempt created is gone again.
-	if _, err := os.Stat(freshGate); !os.IsNotExist(err) {
+	// The gate this attempt created is gone again, and so is the remote it
+	// added.
+	if _, err := os.Lstat(freshGate); !os.IsNotExist(err) {
 		t.Errorf("the gate directory this attempt created still exists at %s", freshGate)
 	}
-	// The gate that was already there survives.
-	if _, err := os.Stat(orphanGate); err != nil {
-		t.Errorf("a pre-existing gate directory was removed by a failed init: %v", err)
+	if has, err := gitpkg.HasRemote(ctx, freshWork, RemoteName); err != nil || has {
+		t.Errorf("the failed init left its gate remote behind (has=%v, err=%v)", has, err)
+	}
+	// The gate that was already there survives, still wired.
+	if !dirExists(ownGate) {
+		t.Errorf("a pre-existing gate directory was removed by a failed init: %s", ownGate)
+	}
+	if url, err := gitpkg.GetConfiguredRemoteURL(ctx, ownWork, RemoteName); err != nil || url != ownGate {
+		t.Errorf("own gate remote = %q, %v; want %q", url, err, ownGate)
 	}
 	// The other registration's gate is untouched.
 	otherAfter := treeSnapshot(t, otherGate)
@@ -413,28 +428,32 @@ func TestInitInsertFailureRemovesOnlyWhatThisAttemptCreated(t *testing.T) {
 	}
 	t.Cleanup(func() { insertRepoRecord = oldInsert })
 
-	// A checkout whose gate directory already exists.
-	orphanWork := setupTestRepo(t)
-	orphanGate := p.RepoDir(repoID(orphanWork))
-	if out, err := exec.Command("git", "init", "--bare", orphanGate).CombinedOutput(); err != nil {
-		t.Fatalf("init orphan gate: %v: %s", err, out)
+	// A checkout whose own gate directory already exists (and is wired).
+	ownWork := setupTestRepo(t)
+	ownGate := p.RepoDir(repoID(ownWork))
+	initBareAt(t, ownGate)
+	if err := gitpkg.AddRemote(ctx, ownWork, RemoteName, ownGate); err != nil {
+		t.Fatalf("wire own gate: %v", err)
 	}
 
 	// A checkout with no gate directory at all.
 	freshWork := setupTestRepo(t)
 	freshGate := p.RepoDir(repoID(freshWork))
 
-	if _, _, err := Init(ctx, d, p, orphanWork); err == nil {
+	if _, _, err := Init(ctx, d, p, ownWork); err == nil {
 		t.Fatal("init must fail with the injected registration failure")
 	}
-	if _, err := os.Stat(orphanGate); err != nil {
-		t.Errorf("a pre-existing gate directory was removed by a failed init: %v", err)
+	if !dirExists(ownGate) {
+		t.Errorf("a pre-existing gate directory was removed by a failed init: %s", ownGate)
+	}
+	if url, err := gitpkg.GetConfiguredRemoteURL(ctx, ownWork, RemoteName); err != nil || url != ownGate {
+		t.Errorf("own gate remote = %q, %v; want %q", url, err, ownGate)
 	}
 
 	if _, _, err := Init(ctx, d, p, freshWork); err == nil {
 		t.Fatal("init must fail with the injected registration failure")
 	}
-	if _, err := os.Stat(freshGate); !os.IsNotExist(err) {
+	if _, err := os.Lstat(freshGate); !os.IsNotExist(err) {
 		t.Errorf("the gate directory this attempt created still exists at %s", freshGate)
 	}
 	// The remote this attempt added is gone again.
@@ -474,5 +493,278 @@ func TestInitInsertFailureLeavesAGateAnotherRegistrationOwns(t *testing.T) {
 	}
 	if _, err := os.Stat(gateDir); err != nil {
 		t.Errorf("the gate of the registration that won the race was removed by the loser: %v", err)
+	}
+}
+
+// initBareAt creates a bare repository at dir, outside of Init.
+func initBareAt(t *testing.T, dir string) {
+	t.Helper()
+	if out, err := exec.Command("git", "init", "--bare", dir).CombinedOutput(); err != nil {
+		t.Fatalf("init bare %s: %v: %s", dir, err, out)
+	}
+}
+
+// newInitFixture returns a no-mistakes root and its registry.
+func newInitFixture(t *testing.T) (*paths.Paths, *db.DB) {
+	t.Helper()
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	return p, openTestDB(t, p)
+}
+
+// TestInitRefusesAnUnregisteredGateItIsNotWiredTo covers a fresh init whose
+// gate path is already taken although no registration owns the ID - a gate
+// left behind by an interrupted init or a removed registration - while the
+// checkout's gate remote does not point at it. Provisioning it would rewrite
+// its configuration and hooks, so the init must stop before touching it, with
+// a typed error naming the path, and leave it byte-for-byte as it was.
+func TestInitRefusesAnUnregisteredGateItIsNotWiredTo(t *testing.T) {
+	ctx := context.Background()
+	p, d := newInitFixture(t)
+
+	work := setupTestRepo(t)
+	gateDir := p.RepoDir(repoID(work))
+	initBareAt(t, gateDir)
+	commit, gateWorktree := seedGateSentinel(t, gateDir)
+	before := treeSnapshot(t, gateDir)
+	beforeRefs := gateRefSnapshot(t, gateDir)
+
+	_, _, err := Init(ctx, d, p, work)
+	var unreg *UnregisteredGateError
+	if !errors.As(err, &unreg) {
+		t.Fatalf("init error = %v (%T), want a *gate.UnregisteredGateError", err, err)
+	}
+	if unreg.GateDir != gateDir || unreg.CallerPath != work || unreg.ID != repoID(work) {
+		t.Errorf("unregistered gate error = %+v", unreg)
+	}
+	if !strings.Contains(err.Error(), gateDir) {
+		t.Errorf("the refusal does not name the gate path %q: %v", gateDir, err)
+	}
+
+	compareSnapshots(t, "unregistered gate", before, treeSnapshot(t, gateDir))
+	if got := gateRefSnapshot(t, gateDir); got != beforeRefs {
+		t.Errorf("unregistered gate refs changed:\nbefore:\n%s\nafter:\n%s", beforeRefs, got)
+	}
+	assertGateWorktreeUsable(t, gateWorktree, commit)
+	if has, err := gitpkg.HasRemote(ctx, work, RemoteName); err != nil || has {
+		t.Errorf("the refused init wired the checkout to the gate (has=%v, err=%v)", has, err)
+	}
+	if repo, err := d.GetRepoByPath(work); err != nil || repo != nil {
+		t.Errorf("the refused checkout was registered: %+v, %v", repo, err)
+	}
+}
+
+// TestInitAdoptsItsOwnUnregisteredGate keeps the recovery path open: a
+// checkout whose gate remote already points at the gate (the registry was
+// lost, the gate was not) re-registers that gate, history and all, instead of
+// being refused.
+func TestInitAdoptsItsOwnUnregisteredGate(t *testing.T) {
+	ctx := context.Background()
+	p, d := newInitFixture(t)
+
+	work := setupTestRepo(t)
+	first, _, err := Init(ctx, d, p, work)
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	gateDir := p.RepoDir(first.ID)
+	commit, gateWorktree := seedGateSentinel(t, gateDir)
+	if err := d.DeleteRepo(first.ID); err != nil {
+		t.Fatalf("drop registration: %v", err)
+	}
+
+	repo, created, err := Init(ctx, d, p, work)
+	if err != nil {
+		t.Fatalf("init of a checkout wired to its own unregistered gate: %v", err)
+	}
+	if !created || repo.ID != first.ID {
+		t.Errorf("re-registration = %+v (created=%v), want ID %q created", repo, created, first.ID)
+	}
+	assertGateWorktreeUsable(t, gateWorktree, commit)
+	if !strings.Contains(gateRefSnapshot(t, gateDir), "refs/gate-sentinel "+commit) {
+		t.Error("the adopted gate lost its refs")
+	}
+}
+
+// TestInitLeavesANonDirectoryAtTheGatePathAlone covers a gate path taken by
+// something that is not a directory. This attempt did not create it, so a
+// failed init must neither delete nor rewrite it.
+func TestInitLeavesANonDirectoryAtTheGatePathAlone(t *testing.T) {
+	ctx := context.Background()
+	p, d := newInitFixture(t)
+
+	work := setupTestRepo(t)
+	gatePath := p.RepoDir(repoID(work))
+	if err := os.WriteFile(gatePath, []byte("not a gate\n"), 0o644); err != nil {
+		t.Fatalf("write file at gate path: %v", err)
+	}
+	// Wire the checkout to it, so not even a remote pointing at the path
+	// makes a file a gate this init may provision.
+	if err := gitpkg.AddRemote(ctx, work, RemoteName, gatePath); err != nil {
+		t.Fatalf("wire remote: %v", err)
+	}
+
+	_, _, err := Init(ctx, d, p, work)
+	var unreg *UnregisteredGateError
+	if !errors.As(err, &unreg) {
+		t.Fatalf("init error = %v (%T), want a *gate.UnregisteredGateError", err, err)
+	}
+	data, readErr := os.ReadFile(gatePath)
+	if readErr != nil || string(data) != "not a gate\n" {
+		t.Errorf("the file at the gate path was changed: %q, %v", data, readErr)
+	}
+}
+
+// TestInitFailureKeepsAnAliasedGateRemoteLiteral covers the checkout half of
+// the rollback rule: a failed init that did not change the gate remote must
+// not write it. A remote configured through url.<base>.insteadOf reads back
+// expanded, and "restoring" that expanded URL would replace the operator's
+// alias for good.
+func TestInitFailureKeepsAnAliasedGateRemoteLiteral(t *testing.T) {
+	ctx := context.Background()
+	p, d := newInitFixture(t)
+
+	work := setupTestRepo(t)
+	gateDir := p.RepoDir(repoID(work))
+	initBareAt(t, gateDir)
+	alias := "nmgate:" + filepath.Base(gateDir)
+	if _, err := gitpkg.Run(ctx, work, "config", "url."+p.ReposDir()+"/.insteadOf", "nmgate:"); err != nil {
+		t.Fatalf("configure alias: %v", err)
+	}
+	if err := gitpkg.AddRemote(ctx, work, RemoteName, alias); err != nil {
+		t.Fatalf("add aliased remote: %v", err)
+	}
+	if url, err := gitpkg.GetRemoteURL(ctx, work, RemoteName); err != nil || url != gateDir {
+		t.Fatalf("aliased remote resolves to %q, %v; want %q", url, err, gateDir)
+	}
+
+	oldEnsure := ensureGateHooksPathIsolation
+	ensureGateHooksPathIsolation = func(context.Context, string) (bool, error) {
+		return false, errors.New("injected provisioning failure")
+	}
+	t.Cleanup(func() { ensureGateHooksPathIsolation = oldEnsure })
+
+	if _, _, err := Init(ctx, d, p, work); err == nil {
+		t.Fatal("init must fail with the injected provisioning failure")
+	}
+	if url, err := gitpkg.GetConfiguredRemoteURL(ctx, work, RemoteName); err != nil || url != alias {
+		t.Errorf("literal gate remote after a failed init = %q, %v; want the alias %q", url, err, alias)
+	}
+	if !dirExists(gateDir) {
+		t.Error("the gate the checkout was wired to was removed by a failed init")
+	}
+}
+
+// TestInitWaitsForTheInitLock proves the ownership decision is exclusive: an
+// init cannot read the registry, create a gate or register while another
+// init (or eject) holds the lock.
+func TestInitWaitsForTheInitLock(t *testing.T) {
+	ctx := context.Background()
+	p, d := newInitFixture(t)
+	work := setupTestRepo(t)
+	gateDir := p.RepoDir(repoID(work))
+
+	unlock, err := acquireInitLock(ctx, p)
+	if err != nil {
+		t.Fatalf("take init lock: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := Init(ctx, d, p, work)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		unlock()
+		t.Fatalf("init finished while another holder had the init lock: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if _, err := os.Lstat(gateDir); !os.IsNotExist(err) {
+		t.Errorf("init created the gate while another holder had the init lock")
+	}
+	unlock()
+	if err := <-done; err != nil {
+		t.Fatalf("init after the lock was released: %v", err)
+	}
+}
+
+// TestInitGivesUpOnAHeldInitLock bounds the wait, so a stuck holder produces
+// an error rather than a hang.
+func TestInitGivesUpOnAHeldInitLock(t *testing.T) {
+	ctx := context.Background()
+	p, d := newInitFixture(t)
+	work := setupTestRepo(t)
+
+	oldWait := initLockWait
+	initLockWait = 100 * time.Millisecond
+	t.Cleanup(func() { initLockWait = oldWait })
+
+	unlock, err := acquireInitLock(ctx, p)
+	if err != nil {
+		t.Fatalf("take init lock: %v", err)
+	}
+	defer unlock()
+
+	if _, _, err := Init(ctx, d, p, work); err == nil || !strings.Contains(err.Error(), "init.lock") {
+		t.Fatalf("init under a held lock = %v, want a lock timeout naming the lock", err)
+	}
+	if _, err := os.Lstat(p.RepoDir(repoID(work))); !os.IsNotExist(err) {
+		t.Error("init created the gate without the init lock")
+	}
+}
+
+// TestConcurrentInitsOfOneCheckoutShareOneGate races several inits of the
+// same checkout. Exactly one creates and registers the gate, the others
+// refresh it, and the gate survives with its content.
+func TestConcurrentInitsOfOneCheckoutShareOneGate(t *testing.T) {
+	ctx := context.Background()
+	p, d := newInitFixture(t)
+	work := setupTestRepo(t)
+
+	const n = 4
+	type result struct {
+		repo    *db.Repo
+		created bool
+		err     error
+	}
+	results := make(chan result, n)
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		go func() {
+			<-start
+			repo, created, err := Init(ctx, d, p, work)
+			results <- result{repo, created, err}
+		}()
+	}
+	close(start)
+
+	created := 0
+	var id string
+	for i := 0; i < n; i++ {
+		r := <-results
+		if r.err != nil {
+			t.Fatalf("concurrent init: %v", r.err)
+		}
+		if r.created {
+			created++
+		}
+		if id == "" {
+			id = r.repo.ID
+		} else if r.repo.ID != id {
+			t.Errorf("concurrent inits registered different IDs: %q and %q", id, r.repo.ID)
+		}
+	}
+	if created != 1 {
+		t.Errorf("concurrent inits created the gate %d times, want exactly once", created)
+	}
+	gateDir := p.RepoDir(id)
+	if out, err := exec.Command("git", "--git-dir", gateDir, "rev-parse", "--is-bare-repository").CombinedOutput(); err != nil || strings.TrimSpace(string(out)) != "true" {
+		t.Errorf("the shared gate is not a valid bare repository after concurrent inits: %v: %s", err, out)
+	}
+	if url, err := gitpkg.GetRemoteURL(ctx, work, RemoteName); err != nil || url != gateDir {
+		t.Errorf("gate remote after concurrent inits = %q, %v; want %q", url, err, gateDir)
 	}
 }
