@@ -108,7 +108,8 @@ func repoID(absPath string) string {
 // a working directory that was renamed or moved since the gate was created:
 // the gate identified by the leftover no-mistakes remote is reattached at the
 // new path, preserving its run history. The returned bool reports whether a
-// new gate was created (true) or an existing one was refreshed (false).
+// new registration was created (true), including adoption of an unregistered
+// gate, or an existing registration was refreshed (false).
 func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Repo, bool, error) {
 	return InitWithFork(ctx, d, p, workDir, "")
 }

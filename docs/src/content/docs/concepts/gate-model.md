@@ -43,8 +43,31 @@ When you run `no-mistakes init` in a repo:
 `init` is idempotent.
 If the repo is already initialized, it refreshes the existing gate instead of failing: managed hook installation, push-option support, hook-path isolation, gate and working remotes, and origin/default-branch metadata are repaired or updated where needed.
 If the working repo was renamed or moved and the old path no longer exists, `init` reattaches the existing gate from the leftover `no-mistakes` remote, updates the stored working path, and preserves the repo ID plus run history.
-If the working repo was copied and the original path still exists, `init` treats the copy as a new repo and repoints the copied `no-mistakes` remote to a fresh gate.
+If the working repo was copied and the original path still exists, `init` treats the copy as a new repo and repoints the copied `no-mistakes` remote to a fresh gate, provided the copy's derived repo ID is not already registered.
 If daemon startup fails during a refresh, `init` reports the error but does not eject the pre-existing gate.
+
+Before provisioning a fresh gate, `init` checks whether another checkout owns
+the derived repo ID. A conflict is refused without changing that checkout's
+gate or the caller's remote; the error names the registered path. This can
+happen when a copy is restored at a moved checkout's original path, whose ID
+the moved registration still owns. Run `init` from the registered checkout,
+or move the copy to a path of its own.
+
+If no registration owns the ID but its gate path already exists, `init`
+refuses before provisioning unless it is a real directory the caller's
+`no-mistakes` remote already resolves to. That exception allows re-registration
+after the registry was lost. Otherwise, inspect the existing path and move it
+away only if it is no longer needed, then retry. A provisioning or registration
+failure removes only a gate directory created by that attempt and still
+unowned in the registry; a pre-existing directory is retained. Rollback restores
+the caller's gate remote only if it changed, preserving literal URL values,
+including aliases.
+
+`init` and `eject` serialize ownership changes with an OS file lock at
+`<NM_HOME>/init.lock`, held from the first registration lookup through completion
+or rollback. A competing operation waits up to two minutes, then reports the
+lock path and asks you to retry after the holder finishes. The OS releases the
+lock when its holder exits, including on a crash.
 
 Enrollment keeps the working checkout non-bare. Re-initializing a
 registered gate validates the existing bare repository instead of running
@@ -490,6 +513,7 @@ Everything lives under `~/.no-mistakes/` by default. Set `NM_HOME` to relocate i
 | `socket`                         | Unix domain socket for IPC                                                                                              |
 | `daemon.pid`                     | Daemon identity record                                                                                                  |
 | `daemon.lock`                    | Singleton lock; the OS lock a live daemon holds so a second daemon for the same root cannot start                       |
+| `init.lock`                      | Enrollment lock; see [init ownership and rollback](#what-no-mistakes-init-does)                                           |
 | `config.yaml`                    | Global configuration                                                                                                    |
 | `update-check.json`              | Cached update check result                                                                                              |
 | `servers/`                       | PID-tracking records for managed agent servers                                                                          |

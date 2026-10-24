@@ -70,8 +70,7 @@ Re-running `init` on an already-initialized repo succeeds and reports `Gate alre
 It refreshes managed gate wiring, origin/default-branch metadata, hook-path isolation, and, by default, the installed agent skill, overwriting any stale `SKILL.md` content from an older binary.
 When a fork URL is already recorded, re-running `init` without `--fork-url` preserves it.
 Passing `--fork-url` again replaces the stored fork URL after validation.
-If you rename or move an initialized working directory and the old path no longer exists, re-running `init` from the new path reattaches the existing gate, preserves the repo ID and run history, and updates the stored working path.
-If you copy an initialized working directory while the original still exists, the copy is treated as a separate repo and gets a fresh gate.
+For moved or copied checkouts, repo-ID conflicts, unregistered gate paths, and concurrent `init`/`eject` operations, see [init ownership and rollback](/no-mistakes/concepts/gate-model/#what-no-mistakes-init-does).
 Fresh init rolls back gate setup when a required gate or daemon step fails; refresh does not eject a pre-existing gate if daemon startup fails.
 Skill installation is best-effort: if the skill write fails, init reports it and leaves the working gate in place.
 With `--install-skill=false`, fresh initialization and refresh skip user-level skill installation entirely and report it as disabled. Existing user skills remain untouched. The flag does not change gate setup or daemon startup, and must be passed on each invocation that should skip installation.
