@@ -2,6 +2,7 @@ package citest
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -210,5 +211,56 @@ func TestCIStep_UnhealthyPollsKeepTheNormalCadence(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCIStep_RegistrationWaitCadenceAcrossMergeability(t *testing.T) {
+	for _, mergeability := range []string{"MERGEABLE", "UNKNOWN", "PENDING"} {
+		for _, required := range []bool{false, true} {
+			for _, noCI := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/required=%t/no_ci=%t", mergeability, required, noCI), func(t *testing.T) {
+					t.Parallel()
+					dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
+					sctx := stepstest.NewTestContextWithDBRecords(t, &stepstest.MockAgent{AgentName: "test"}, dir, baseSHA, headSHA, config.Commands{})
+					sctx.Env = stepstest.FakeCIGHMergeable(t, "OPEN", `[]`, mergeability)
+					stepstest.BindCurrentPRComparison(t, sctx, "https://github.com/test/repo/pull/42", "test/repo", "main")
+					sctx.Config.CITimeout = time.Hour
+					sctx.Config.NoCI = noCI
+					if required {
+						sctx.Config.CI.MustPass = []string{"build"}
+					}
+					ctx, cancel := context.WithCancel(context.Background())
+					defer cancel()
+					sctx.Ctx = ctx
+					now := time.Unix(1700000000, 0)
+					var waits []time.Duration
+					step := (&steps.CIStep{}).
+						SetBaseBranchTip(func(context.Context) (string, bool) { return baseSHA, true }).
+						SetNow(func() time.Time { return now }).
+						SetWaitForNextPoll(func(ctx context.Context, interval time.Duration) error {
+							waits = append(waits, interval)
+							now = now.Add(interval)
+							if len(waits) == 4 {
+								cancel()
+								return ctx.Err()
+							}
+							return nil
+						})
+					_, _ = step.Execute(sctx)
+					want := []time.Duration{30 * time.Second, 30 * time.Second, 30 * time.Second, 30 * time.Second}
+					if noCI && !required {
+						want = []time.Duration{30 * time.Second, 60 * time.Second, 120 * time.Second, 240 * time.Second}
+					}
+					if len(waits) != len(want) {
+						t.Fatalf("waits=%v, want %v", waits, want)
+					}
+					for i := range want {
+						if waits[i] != want[i] {
+							t.Fatalf("waits=%v, want %v: registration waits retain normal cadence; trusted no_ci only waives absent checks without explicit requirements", waits, want)
+						}
+					}
+				})
+			}
+		}
 	}
 }

@@ -1019,6 +1019,10 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			// conclusive pass, failure, or skip must keep the PR non-ready. This
 			// includes cancelled, held, and unknown provider states.
 			readinessPending := !scoped.Settled()
+			if !rollupObserved && (readinessPending || sctx.Run.Shipping != nil ||
+				!scoped.Ready() && (sctx.Config == nil || !sctx.Config.NoCI)) {
+				pollSettled = false
+			}
 			failing := failingCheckNames(checks)
 
 			// A rerun the provider has answered is no longer outstanding. This
@@ -1168,9 +1172,6 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 					clearCIMonitorReady(sctx)
 					lastMonitorLog = ""
 				case readinessPending:
-					if !rollupObserved {
-						pollSettled = false
-					}
 					// Checks are (re-)running with no failures yet. Surface this
 					// so a PR that passed checks and starts re-running clears the
 					// previous passed-checks signal instead of looking stale.
@@ -1183,7 +1184,6 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 					// Strict shipping needs an observed rollup even when the
 					// target requires only the pipeline's own status.
 					!rollupObserved && sctx.Run.Shipping != nil):
-					pollSettled = false
 					clearCIMonitorReady(sctx)
 					lastMonitorLog = ""
 					sctx.Log("no CI checks reported yet, waiting for checks to register...")
