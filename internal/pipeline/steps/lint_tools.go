@@ -232,7 +232,9 @@ func resolveLintBinary(workDir, dir, bin string, lookPath func(string) string) s
 				return candidate
 			}
 		}
-		if d == "." {
+		if d == "." || path.Dir(d) == d {
+			// "." ends a repository-relative walk; a filesystem root ends
+			// any other, so a stray absolute dir cannot loop forever.
 			break
 		}
 	}
@@ -420,7 +422,12 @@ func checkLintToolPlan(sctx *pipeline.StepContext, plan lintToolPlan, run lintCh
 	if !filepath.IsAbs(binary) {
 		binary = filepath.Join(sctx.WorkDir, filepath.FromSlash(binary))
 	}
-	args := append(append([]string{}, plan.Tool.CheckArgs...), files...)
+	args := append([]string{}, plan.Tool.CheckArgs...)
+	for _, file := range files {
+		// "./" keeps a changed file named like an option (--write) a file
+		// operand, so the read-only check can never be turned into an edit.
+		args = append(args, "./"+file)
+	}
 	output, exitCode, err := run(sctx.Ctx, filepath.Join(sctx.WorkDir, filepath.FromSlash(plan.Dir)), binary, args)
 	command := fmt.Sprintf("cd %s && %s %s", plan.Dir, plan.binaryFromDir(), strings.Join(plan.Tool.CheckArgs, " "))
 	if err != nil {
@@ -512,13 +519,23 @@ func lintEnvironmentRecheck(sctx *pipeline.StepContext) (*pipeline.StepOutcome, 
 		if !ok || tool == "" {
 			continue
 		}
-		bin := tool
+		bin := ""
 		for _, known := range knownLintTools {
 			if known.Name == tool {
 				bin = known.Bin
 			}
 		}
-		if resolveLintBinary(sctx.WorkDir, path.Clean(filepath.ToSlash(dir)), bin, lookPath) != "" {
+		relDir, validDir := lintRepoRelativeDir(dir)
+		if bin == "" || !validDir {
+			// The step can only re-check tools it knows how to resolve, in a
+			// directory inside the worktree. Anything else (a Python tool in
+			// .venv, an agent-written absolute dir) goes back to the normal
+			// lint pass, where the agent can find it, instead of a re-park
+			// that could never clear.
+			sctx.Log(fmt.Sprintf("lint tool %s for %q has no step-side availability check; re-running the lint pass", tool, dir))
+			return nil, nil
+		}
+		if resolveLintBinary(sctx.WorkDir, relDir, bin, lookPath) != "" {
 			sctx.Log(fmt.Sprintf("lint tool %s is now available for %s; re-running the lint pass", tool, dir))
 			return nil, nil
 		}
@@ -529,4 +546,18 @@ func lintEnvironmentRecheck(sctx *pipeline.StepContext) (*pipeline.StepOutcome, 
 		return nil, err
 	}
 	return &pipeline.StepOutcome{NeedsApproval: true, Findings: payload, FixSummary: NoChangesAppliedSummary}, nil
+}
+
+// lintRepoRelativeDir returns dir as a clean, slash-separated path inside
+// the repository, or false when it is absolute or escapes the root.
+func lintRepoRelativeDir(dir string) (string, bool) {
+	dir = filepath.ToSlash(strings.TrimSpace(dir))
+	if dir == "" || path.IsAbs(dir) || filepath.IsAbs(filepath.FromSlash(dir)) || filepath.VolumeName(filepath.FromSlash(dir)) != "" {
+		return "", false
+	}
+	clean := path.Clean(dir)
+	if clean == ".." || strings.HasPrefix(clean, "../") {
+		return "", false
+	}
+	return clean, true
 }

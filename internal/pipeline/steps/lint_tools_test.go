@@ -18,6 +18,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/testgit"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -230,7 +231,13 @@ func hermeticPath(t *testing.T) string {
 	t.Helper()
 	bin := t.TempDir()
 	for _, name := range []string{"git", "sh"} {
-		real, err := exec.LookPath(name)
+		// The real git, never a PATH wrapper that could resolve back to
+		// itself inside this restricted PATH (internal/testgit).
+		resolve := exec.LookPath
+		if name == "git" {
+			resolve = func(string) (string, error) { return testgit.RealGit() }
+		}
+		real, err := resolve(name)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -270,7 +277,7 @@ func TestLintStep_SubPackagePrettierIsRunFromItsPackageNotReportedMissing(t *tes
 	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
 	wantDir, _ := filepath.EvalSymlinks(filepath.Join(dir, "controller"))
 	gotDir, _ := filepath.EvalSymlinks(lines[0])
-	if gotDir != wantDir || lines[1] != "--check --ignore-unknown package.json src/a.ts" {
+	if gotDir != wantDir || lines[1] != "--check --ignore-unknown ./package.json ./src/a.ts" {
 		t.Fatalf("prettier ran in %q with %q, want %q with --check over the changed files under controller/", lines[0], lines[1], wantDir)
 	}
 }
@@ -600,7 +607,7 @@ func TestLintStep_PresentToolChecksConfiguredFiles(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if !reflect.DeepEqual(strings.Fields(string(checked)), []string{"App.vue", "package.json"}) {
+				if !reflect.DeepEqual(strings.Fields(string(checked)), []string{"./App.vue", "./package.json"}) {
 					t.Fatalf("checked files = %q, want all configured files", checked)
 				}
 				findings, err := types.ParseFindingsJSON(outcome.Findings)
@@ -738,5 +745,63 @@ func TestLintStep_CancelledVerificationReturnsAnError(t *testing.T) {
 				t.Fatalf("outcome = %+v, error = %v, want cancellation without findings", outcome, err)
 			}
 		})
+	}
+}
+
+func TestCheckLintToolPlan_FileOperandsCannotBecomeOptions(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	sctx := newTestContext(t, &mockAgent{name: "test"}, root, "", "", config.Commands{})
+	var got []string
+	run := func(_ context.Context, _, _ string, args []string) (string, int, error) {
+		got = args
+		return "", 0, nil
+	}
+	plan := lintToolPlan{Tool: knownLintTools[0], Dir: ".", ConfiguredBy: "package.json", Binary: "node_modules/.bin/prettier", Files: []string{"--write", "src/a.ts"}}
+	if findings := checkLintToolPlan(sctx, plan, run); len(findings) != 0 {
+		t.Fatalf("findings = %+v", findings)
+	}
+	if !reflect.DeepEqual(got, []string{"--check", "--ignore-unknown", "./--write", "./src/a.ts"}) {
+		t.Fatalf("args = %q, want every file operand prefixed with ./", got)
+	}
+}
+
+func TestLintRepoRelativeDir(t *testing.T) {
+	t.Parallel()
+	for dir, want := range map[string]bool{".": true, "controller": true, "a/b": true, "/workspace/project": false, "..": false, "../x": false, "a/../../x": false} {
+		if _, ok := lintRepoRelativeDir(dir); ok != want {
+			t.Errorf("lintRepoRelativeDir(%q) ok = %v, want %v", dir, ok, want)
+		}
+	}
+}
+
+func TestResolveLintBinary_AbsoluteDirTerminates(t *testing.T) {
+	t.Parallel()
+	done := make(chan string, 1)
+	go func() { done <- resolveLintBinary(t.TempDir(), "/no-such-dir/project", "no-such-tool-xyz", noLookPath) }()
+	select {
+	case got := <-done:
+		if got != "" {
+			t.Fatalf("resolved %q, want nothing", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("resolveLintBinary looped on an absolute directory")
+	}
+}
+
+func TestLintEnvironmentRecheck_UnsupportedToolOrDirFallsThroughToLintPass(t *testing.T) {
+	t.Parallel()
+	for _, id := range []string{"lint-missing-ruff", "lint-missing-prettier@/workspace/project", "lint-missing-prettier@../outside"} {
+		sctx := newTestContext(t, &mockAgent{name: "test"}, t.TempDir(), "", "", config.Commands{})
+		sctx.Env = []string{hermeticPath(t)}
+		sctx.Fixing = true
+		sctx.PreviousFindings, _ = types.MarshalFindingsJSON(Findings{Items: []Finding{{
+			ID: id, Severity: "warning", Action: types.ActionAskUser,
+			Category: types.FindingCategoryLintEnvironment, Description: "missing",
+		}}})
+		outcome, err := lintEnvironmentRecheck(sctx)
+		if err != nil || outcome != nil {
+			t.Fatalf("%s: outcome=%+v err=%v, want a fall-through to the normal lint pass", id, outcome, err)
+		}
 	}
 }
