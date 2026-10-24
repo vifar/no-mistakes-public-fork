@@ -529,13 +529,15 @@ func TestExecutor_GateRecheckStopsAfterApprovalCancelAndShutdown(t *testing.T) {
 	}
 }
 
-func TestExecutor_ShutdownDuringReconcileKeepsRunParked(t *testing.T) {
+func TestExecutor_ShutdownDuringFatalReconcileKeepsRunParked(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	step := &reconcilingApprovalStep{
 		name:    types.StepCI,
 		started: make(chan struct{}),
-		block:   true,
+		release: make(chan struct{}),
 	}
+	reconcileErr := error(fmt.Errorf("%w: head lookup cancelled", ErrFatalGateReconciliation))
+	step.err.Store(&reconcileErr)
 	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
 	exec.SetGateReconcileTimings(10*time.Millisecond, 100*time.Millisecond)
 
@@ -548,6 +550,7 @@ func TestExecutor_ShutdownDuringReconcileKeepsRunParked(t *testing.T) {
 		t.Fatal("gate reconciliation did not start")
 	}
 	cancel(ErrDaemonShutdown)
+	close(step.release)
 
 	select {
 	case err := <-done:
