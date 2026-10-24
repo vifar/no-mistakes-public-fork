@@ -48,7 +48,8 @@ func settleTestLeftoverEdits(sctx *pipeline.StepContext, findings *Findings, nee
 		return nil, false, err
 	}
 	if allowed {
-		if needsApproval || slices.ContainsFunc(dirty, func(path string) bool { return slices.Contains(dirtyBefore, path) }) {
+		// An unanswered question stays with this gate: a restart would drop it.
+		if needsApproval || types.HasAskUserFindings(*findings) || slices.ContainsFunc(dirty, func(path string) bool { return slices.Contains(dirtyBefore, path) }) {
 			return nil, false, nil
 		}
 		head, err := git.HeadSHA(sctx.Ctx, sctx.WorkDir)
