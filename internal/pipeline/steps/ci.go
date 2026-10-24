@@ -681,8 +681,16 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 	// observation is what this poll read from the forge (PR state,
 	// mergeability, base and the checks' own states); a poll that saw exactly
 	// what the previous one saw backs the next wait off (unchangedPollInterval).
+	// Only a healthy, settled poll counts (issue #226): one whose read failed,
+	// whose readiness proof failed, or that waits on a head the provider has
+	// not registered checks for keeps the normal cadence, so its recovery is
+	// noticed promptly. The poll's outcome (status message and readiness) is
+	// part of the observation, so a readiness flip resets the backoff.
 	observation, lastObservation := "", ""
 	unchangedPolls := 0
+	pollHealthy, pollSettled := true, true
+	ready := false
+	defer watchCIPollOutcome(sctx, func() { pollHealthy = false }, func(r bool) { ready = r })()
 	consecutiveBotCommentErrs := 0
 	receiptTimeout := sctx.Config.CIReadinessReceiptTimeout
 	if receiptTimeout <= 0 {
@@ -705,12 +713,13 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 	waitForPoll := func() error {
 		interval := s.pollIntervalOverride
 		interval = ciPollInterval(sctx, now().Sub(started), interval)
-		if observation != "" && observation == lastObservation {
+		observed := ciPollObservation(observation, pollHealthy && pollSettled, lastMonitorLog, ready)
+		if observed != "" && observed == lastObservation {
 			unchangedPolls++
 		} else {
 			unchangedPolls = 0
 		}
-		lastObservation = observation
+		lastObservation = observed
 		if s.pollIntervalOverride == 0 {
 			interval = unchangedPollInterval(interval, unchangedPolls)
 		}
@@ -749,6 +758,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			return nil, err
 		}
 		observation = ""
+		pollHealthy, pollSettled = true, true
 		// One poll reads the PR's state, base and mergeability from a single
 		// forge view instead of one call each (scm.WithPRViewSnapshot).
 		pollCtx := scm.WithPRViewSnapshot(ctx)
@@ -931,6 +941,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		}
 		if err != nil {
 			if errors.Is(err, scm.ErrHeadChanged) {
+				pollSettled = false
 				timeoutFailingChecks = nil
 				timeoutMergeConflict = false
 				// The provider answered, but nothing it offered is evidence for
@@ -1239,6 +1250,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 					}
 					var comparisonErr error
 					lastMonitorLog, comparisonErr = logVerifiedCIMonitorStatus(sctx, host, checks, passedMsg, lastMonitorLog)
+					if comparisonErr != nil {
+						pollHealthy = false
+					}
 					if errors.Is(comparisonErr, errCIReadinessReceiptMissing) {
 						receiptMissingObserved = true
 						if receiptMissingSince.IsZero() || receiptMissingHead != sctx.Run.HeadSHA {
@@ -1265,7 +1279,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			receiptMissingSince = time.Time{}
 			receiptMissingHead = ""
 		}
-		if !botCommentReadFailed {
+		if botCommentReadFailed {
+			pollHealthy = false
+		} else {
 			consecutiveBotCommentErrs = 0
 		}
 		if !behindObserved {

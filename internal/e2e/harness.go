@@ -1135,3 +1135,14 @@ func findRepoRoot() (string, error) {
 		dir = parent
 	}
 }
+
+// DisableCIPollBackoff turns the CI monitor's unchanged-poll backoff off for
+// the daemon this test starts, through the TEST-ONLY
+// NM_TEST_CI_UNCHANGED_POLL_MAX knob (internal/pipeline/steps/ci_checks.go).
+// The e2e daemon polls on the production schedule, so a journey that must
+// observe several live polls within minutes would otherwise wait for the
+// backed-off cadence. Call it before NewHarness starts the daemon.
+func DisableCIPollBackoff(t *testing.T) {
+	t.Helper()
+	t.Setenv("NM_TEST_CI_UNCHANGED_POLL_MAX", "30s")
+}

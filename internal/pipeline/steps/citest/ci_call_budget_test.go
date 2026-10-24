@@ -130,3 +130,60 @@ func TestCIStep_ChangingChecksKeepTheNormalCadence(t *testing.T) {
 		}
 	}
 }
+
+// Issue #226: the backoff is for polls that read a healthy, settled state that
+// did not change. A poll whose read failed, or whose readiness proof failed,
+// is not "nothing changed": backing it off delays noticing the recovery.
+func TestCIStep_UnhealthyPollsKeepTheNormalCadence(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  func(t *testing.T, head string) []string
+	}{
+		{"mergeability read fails", func(t *testing.T, head string) []string {
+			pending := `[{"name":"build","state":"IN_PROGRESS","bucket":"pending"}]`
+			return append(stepstest.FakeCIGHMergeableError(t, "OPEN", pending, "gh: mergeability unavailable"), "FAKE_CLI_PR_HEAD_SHA="+head)
+		}},
+		{"readiness comparison fails", func(t *testing.T, head string) []string {
+			// Green checks with no bound comparison receipt: every poll's
+			// readiness proof fails while the forge reads stay identical.
+			green := `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`
+			return append(stepstest.FakeCIGH(t, "OPEN", green), "FAKE_CLI_PR_HEAD_SHA="+head)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
+			prURL := "https://github.com/test/repo/pull/42"
+			sctx := stepstest.NewTestContext(t, &stepstest.MockAgent{AgentName: "test"}, dir, baseSHA, headSHA, config.Commands{})
+			sctx.Env = tc.env(t, headSHA)
+			sctx.Run.PRURL = &prURL
+			sctx.Config.CITimeout = time.Hour
+			sctx.Config.CIReadinessReceiptTimeout = time.Hour
+
+			now := time.Unix(1700000000, 0)
+			var waits []time.Duration
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			sctx.Ctx = ctx
+			step := (&steps.CIStep{}).SetNow(func() time.Time { return now }).
+				SetWaitForNextPoll(func(ctx context.Context, interval time.Duration) error {
+					waits = append(waits, interval)
+					now = now.Add(interval)
+					if len(waits) == 4 {
+						cancel()
+						return ctx.Err()
+					}
+					return nil
+				})
+			_, _ = stepstest.ExecuteWithAutoFix(t, step, sctx, 0)
+			if len(waits) != 4 {
+				t.Fatalf("waits=%v, want four polls", waits)
+			}
+			for _, wait := range waits {
+				if wait != 30*time.Second {
+					t.Fatalf("waits=%v, want every unhealthy poll on the normal 30s cadence", waits)
+				}
+			}
+		})
+	}
+}
