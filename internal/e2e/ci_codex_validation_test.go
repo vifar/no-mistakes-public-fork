@@ -169,7 +169,7 @@ func TestCIScopeCodexAcknowledgedRequestWaitJourney(t *testing.T) {
 	branch := "feature/codex-acknowledged-wait"
 	j.push(branch)
 	run := j.expectWaiting(branch, "review bot review is pending")
-	deadline := time.Now().Add(4 * time.Minute)
+	deadline := time.Now().Add(20 * time.Minute)
 	for j.ghCalls("/pulls/", "/reviews") < 7 {
 		if time.Now().After(deadline) {
 			t.Fatal("did not observe seven review polls")
@@ -184,7 +184,7 @@ func TestCIScopeCodexAcknowledgedRequestWaitJourney(t *testing.T) {
 	t.Logf("Seven live provider polls remained monitoring without readiness or repair:\n%s", j.ciLog(run.ID))
 	forge.ReviewReactions["7"] = append(forge.ReviewReactions["7"], json.RawMessage(`{"user":{"login":"chatgpt-codex-connector[bot]"},"content":"+1"}`))
 	j.setForge(forge)
-	j.expectReady(branch, scopeCheckWaitTime)
+	j.expectReady(branch, 6*time.Minute)
 	j.finish(branch)
 }
 

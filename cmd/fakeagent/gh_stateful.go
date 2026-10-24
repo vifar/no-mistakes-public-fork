@@ -273,6 +273,13 @@ func runGhStatefulPRStub(args []string) int {
 		"mergeable":   "MERGEABLE",
 		"headRefOid":  ghStatefulHeadOID(repo, pr.Head),
 	}
+	fields["mergeStateStatus"] = "CLEAN"
+	if forge != nil && forge.Mergeable != "" {
+		fields["mergeable"] = forge.Mergeable
+	}
+	if forge != nil && forge.MergeStateStatus != "" {
+		fields["mergeStateStatus"] = forge.MergeStateStatus
+	}
 	if jq := argAfter(args, "--jq"); jq == `.mergeable + " " + .mergeStateStatus` {
 		mergeable, status := fields["mergeable"], "CLEAN"
 		if forge != nil && forge.Mergeable != "" {
