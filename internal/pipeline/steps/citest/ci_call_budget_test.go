@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps/internal/stepstest"
 )
@@ -136,18 +137,39 @@ func TestCIStep_ChangingChecksKeepTheNormalCadence(t *testing.T) {
 // is not "nothing changed": backing it off delays noticing the recovery.
 func TestCIStep_UnhealthyPollsKeepTheNormalCadence(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		env  func(t *testing.T, head string) []string
+		name      string
+		env       func(t *testing.T, head string) []string
+		configure func(*pipeline.StepContext, *steps.CIStep)
 	}{
-		{"mergeability read fails", func(t *testing.T, head string) []string {
+		{name: "mergeability read fails", env: func(t *testing.T, head string) []string {
 			pending := `[{"name":"build","state":"IN_PROGRESS","bucket":"pending"}]`
 			return append(stepstest.FakeCIGHMergeableError(t, "OPEN", pending, "gh: mergeability unavailable"), "FAKE_CLI_PR_HEAD_SHA="+head)
 		}},
-		{"readiness comparison fails", func(t *testing.T, head string) []string {
+		{name: "readiness comparison fails", env: func(t *testing.T, head string) []string {
 			// Green checks with no bound comparison receipt: every poll's
 			// readiness proof fails while the forge reads stay identical.
 			green := `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`
 			return append(stepstest.FakeCIGH(t, "OPEN", green), "FAKE_CLI_PR_HEAD_SHA="+head)
+		}},
+		{name: "empty rollup waiting for registration", env: func(t *testing.T, head string) []string {
+			return append(stepstest.FakeCIGH(t, "OPEN", `[]`), "FAKE_CLI_PR_HEAD_SHA="+head)
+		}},
+		{name: "empty rollup with missing required check", env: func(t *testing.T, head string) []string {
+			return append(stepstest.FakeCIGH(t, "OPEN", `[]`), "FAKE_CLI_PR_HEAD_SHA="+head)
+		}, configure: func(sctx *pipeline.StepContext, _ *steps.CIStep) {
+			sctx.Config.CI.MustPass = []string{"build"}
+		}},
+		{name: "timeout base tip read fails", env: func(t *testing.T, head string) []string {
+			return append(stepstest.FakeCIGH(t, "OPEN", `[{"name":"build","state":"IN_PROGRESS","bucket":"pending"}]`), "FAKE_CLI_PR_HEAD_SHA="+head)
+		}, configure: func(_ *pipeline.StepContext, step *steps.CIStep) {
+			step.SetBaseBranchTip(func(context.Context) (string, bool) { return "fallback-tip", false })
+		}},
+		{name: "behind base tip read fails", env: func(t *testing.T, head string) []string {
+			return append(stepstest.FakeCIGHMergeable(t, "OPEN", `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`, "MERGEABLE BEHIND"), "FAKE_CLI_PR_HEAD_SHA="+head)
+		}, configure: func(sctx *pipeline.StepContext, step *steps.CIStep) {
+			sctx.Config.CITimeout = -1
+			sctx.Config.CI.RebaseBehind = true
+			step.SetBaseBranchTip(func(context.Context) (string, bool) { return "fallback-tip", false })
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -165,7 +187,7 @@ func TestCIStep_UnhealthyPollsKeepTheNormalCadence(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			sctx.Ctx = ctx
-			step := (&steps.CIStep{}).SetNow(func() time.Time { return now }).
+			step := (&steps.CIStep{}).SetBaseBranchTip(func(context.Context) (string, bool) { return baseSHA, true }).SetNow(func() time.Time { return now }).
 				SetWaitForNextPoll(func(ctx context.Context, interval time.Duration) error {
 					waits = append(waits, interval)
 					now = now.Add(interval)
@@ -175,6 +197,9 @@ func TestCIStep_UnhealthyPollsKeepTheNormalCadence(t *testing.T) {
 					}
 					return nil
 				})
+			if tc.configure != nil {
+				tc.configure(sctx, step)
+			}
 			_, _ = stepstest.ExecuteWithAutoFix(t, step, sctx, 0)
 			if len(waits) != 4 {
 				t.Fatalf("waits=%v, want four polls", waits)

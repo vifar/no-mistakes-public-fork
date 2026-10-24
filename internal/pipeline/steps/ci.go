@@ -839,6 +839,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			tipCtx, cancel := context.WithTimeout(ctx, resolveWindow)
 			tip, resolved := baseBranchTip(tipCtx)
 			cancel()
+			if !resolved || tip == "" {
+				pollHealthy = false
+			}
 			if resolved && tip != "" {
 				if lastBaseTip == "" {
 					lastBaseTip = tip
@@ -1165,6 +1168,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 					clearCIMonitorReady(sctx)
 					lastMonitorLog = ""
 				case readinessPending:
+					if !rollupObserved {
+						pollSettled = false
+					}
 					// Checks are (re-)running with no failures yet. Surface this
 					// so a PR that passed checks and starts re-running clears the
 					// previous passed-checks signal instead of looking stale.
@@ -1177,6 +1183,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 					// Strict shipping needs an observed rollup even when the
 					// target requires only the pipeline's own status.
 					!rollupObserved && sctx.Run.Shipping != nil):
+					pollSettled = false
 					clearCIMonitorReady(sctx)
 					lastMonitorLog = ""
 					sctx.Log("no CI checks reported yet, waiting for checks to register...")
@@ -1229,6 +1236,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 						tipCtx, cancel := context.WithTimeout(ctx, defaultBaseBranchTipResolveWindow)
 						tip, resolved := baseBranchTip(tipCtx)
 						cancel()
+						if !resolved || tip == "" {
+							pollHealthy = false
+						}
 						if !resolved || tip == "" || tip != behindBaseTip {
 							behindBaseTip = ""
 							if resolved {
