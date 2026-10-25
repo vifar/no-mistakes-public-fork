@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"encoding/json"
 	"html"
 	"strconv"
 	"strings"
@@ -12,16 +13,26 @@ import (
 )
 
 func TestPRWrappedInlineClaimsPublication(t *testing.T) {
-	for _, wrapper := range [][2]string{{"**", "**"}, {"*", "*"}, {"__", "__"}, {"_", "_"}, {"~~", "~~"}, {"***", "***"}, {"**_", "_**"}} {
+	for _, wrapper := range [][3]string{
+		{"**", "**", "."}, {"*", "*", "."}, {"__", "__", "."}, {"_", "_", "."},
+		{"~~", "~~", "."}, {"***", "***", "."}, {"**_", "_**", "."},
+		{"**", ".**", ""}, {"*", ".*", "!"}, {"__", ";__", "?"}, {"_", ":_", "."},
+		{"~~", "!~~", "."}, {"***", "?***", "."}, {"**_", "._**", ""}, {"**_", "._!**", "?"},
+	} {
 		for _, tc := range []struct{ name, raw, want string }{
 			{"AI", "Co-Authored-By: Codex <bot@example.invalid>", prAIAttributionNotice},
+			{"configured", "Co-Authored-By: Example, Inc. Bot <opaque@example.com>", prAIAttributionNotice},
 			{"human", "Co-Authored-By: Ada <ada@example.com>", "co-author (quoted): Ada <ada@example.com>"},
 			{"field", `The field "Co-Authored-By:" identifies Ada <ada@example.com>`, `The field "Co-Authored-By:" identifies Ada <ada@example.com>`},
 			{"code", "`Co-Authored-By: Ada <ada@example.com>`", "`Co-Authored-By: Ada <ada@example.com>`"},
 		} {
-			t.Run(wrapper[0]+"/"+tc.name, func(t *testing.T) {
-				raw := "Recorded risk " + wrapper[0] + tc.raw + wrapper[1] + "."
-				want := "Recorded risk " + wrapper[0] + tc.want + wrapper[1] + "."
+			t.Run(wrapper[0]+"/"+tc.name+"/"+wrapper[1]+wrapper[2], func(t *testing.T) {
+				raw := "Recorded risk " + wrapper[0] + tc.raw + wrapper[1] + wrapper[2]
+				want := "Recorded risk " + wrapper[0] + tc.want + wrapper[1] + wrapper[2]
+				var trailers []string
+				if tc.name == "configured" {
+					trailers = []string{tc.raw}
+				}
 				for _, recorded := range []bool{false, true} {
 					input, expected := raw, want
 					if recorded {
@@ -39,10 +50,14 @@ func TestPRWrappedInlineClaimsPublication(t *testing.T) {
 						for _, mode := range []string{config.PRAppendixFull, config.PRAppendixMinimal, config.PRAppendixCollapsed} {
 							ctx := &pipeline.StepContext{Config: &config.Config{}}
 							ctx.Config.PR.Appendix = mode
+							evidenceInput := input
+							if len(trailers) > 0 {
+								evidenceInput = prDisplayNoticeText(input, trailers...)
+							}
 							for path, body := range map[string]string{
-								"assemble": assemblePRBody(ctx, "## What Changed\n\nPreserve repair summaries.", input, "", "", 0, provider),
-								"build":    buildPRBodyWithin("## What Changed\n\nPreserve repair summaries.", input, "", "", ctx, provider, maxPullRequestBodyBytes),
-								"evidence": appendixEvidence(mode, prBodyFlavorFor(provider), input, "", "", provider),
+								"assemble": assemblePRBody(ctx, "## What Changed\n\nPreserve repair summaries.", input, "", "", 0, provider, trailers...),
+								"build":    buildPRBodyWithin("## What Changed\n\nPreserve repair summaries.", input, "", "", ctx, provider, maxPullRequestBodyBytes, trailers...),
+								"evidence": appendixEvidence(mode, prBodyFlavorFor(provider), evidenceInput, "", "", provider),
 							} {
 								view := html.UnescapeString(body)
 								pathExpected := expected
@@ -52,14 +67,20 @@ func TestPRWrappedInlineClaimsPublication(t *testing.T) {
 								if !strings.Contains(view, pathExpected) {
 									t.Errorf("%s/%s/%s recorded=%t: missing %q in %q", provider, mode, path, recorded, pathExpected, view)
 								}
-								if tc.name == "AI" && (strings.Contains(view, "Co-Authored-By:") || strings.Contains(view, "Codex") || strings.Contains(view, "bot@example.invalid")) {
+								if recorded {
+									start, end := strings.Index(view, `{ "summary"`), strings.LastIndex(view, "}")
+									if start < 0 || end < start || !json.Valid([]byte(view[start:end+1])) {
+										t.Errorf("%s/%s/%s published invalid recorded JSON: %q", provider, mode, path, view)
+									}
+								}
+								if (tc.name == "AI" || tc.name == "configured") && (strings.Contains(view, "Co-Authored-By:") || strings.Contains(view, "Codex") || strings.Contains(view, "bot@example.invalid") || strings.Contains(view, "opaque@example.com")) {
 									t.Errorf("%s/%s/%s recorded=%t: published AI attribution: %q", provider, mode, path, recorded, view)
 								}
 							}
 						}
 					}
 					bodyExpected := strings.ReplaceAll(expected, prAIAttributionNotice, "")
-					content, err := composeOwnedPRContent(prOwnedBody{before: input + "\n"}, "fix: preserve repair summaries", compliantPipelineBody(t, testPipelineHeadSHA), 0)
+					content, err := composeOwnedPRContent(prOwnedBody{before: input + "\n"}, "fix: preserve repair summaries", compliantPipelineBody(t, testPipelineHeadSHA), 0, trailers...)
 					if err != nil || !strings.Contains(content.Body, bodyExpected) {
 						t.Errorf("owned recorded=%t: missing %q in %q, error=%v", recorded, bodyExpected, content.Body, err)
 					}
