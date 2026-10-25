@@ -59,6 +59,11 @@ func newExportFixture(t *testing.T) *exportFixture {
 
 func newExportFixtureWithDraft(t *testing.T, draft *bool) *exportFixture {
 	t.Helper()
+	return newExportFixtureWithShipping(t, &types.ShippingOptions{Mode: types.ShippingFull, Draft: draft})
+}
+
+func newExportFixtureWithShipping(t *testing.T, options *types.ShippingOptions) *exportFixture {
+	t.Helper()
 	root := t.TempDir()
 	dir := filepath.Join(root, "worktree")
 	remote := filepath.Join(root, "origin.git")
@@ -95,7 +100,7 @@ func newExportFixtureWithDraft(t *testing.T, draft *bool) *exportFixture {
 		t.Fatal(err)
 	}
 	intent := &db.RunIntent{Summary: "exact user intent\n", Source: db.RunIntentSourceAgent, Score: 1}
-	run, err := database.InsertRunWithShipping(repo.ID, "feature", head, base, intent, "", "", "", "main", false, nil, &types.ShippingOptions{Mode: types.ShippingFull, Draft: draft})
+	run, err := database.InsertRunWithShipping(repo.ID, "feature", head, base, intent, "", "", "", "main", false, nil, options)
 	if err != nil {
 		t.Fatal(err)
 	}

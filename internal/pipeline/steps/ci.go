@@ -1461,8 +1461,21 @@ func verifyShippingMergedProof(sctx *pipeline.StepContext, host scm.Host, pr *sc
 	if err != nil {
 		return err
 	}
-	if c == nil || !c.Approved || c.HeadSHA != sctx.Run.HeadSHA || facts.State != scm.PRStateMerged || facts.URL != pr.URL || facts.HeadSHA != c.HeadSHA || facts.SourceRepo != c.SourceRepo || facts.SourceBranch != c.SourceBranch || facts.TargetBranch != c.TargetBranch || facts.TargetSHA != c.TargetSHA || facts.TargetRepo != github.RepoSlug(sctx.Repo.UpstreamURL) {
+	if c == nil || !c.Approved || c.HeadSHA != sctx.Run.HeadSHA || facts.State != scm.PRStateMerged || facts.URL != pr.URL || facts.HeadSHA != c.HeadSHA || facts.SourceRepo != c.SourceRepo || facts.SourceBranch != c.SourceBranch || facts.TargetBranch != c.TargetBranch || facts.TargetRepo != github.RepoSlug(sctx.Repo.UpstreamURL) {
 		return fmt.Errorf("merged PR differs from approved shipping comparison")
+	}
+	if facts.TargetSHA != c.TargetSHA {
+		advanced := false
+		if keepsCleanHeads(sctx) {
+			upstreamURL := git.ResolveUpstreamURL(sctx.Ctx, sctx.WorkDir, sctx.Repo.UpstreamURL, sctx.Repo.URLsVerified)
+			advanced, err = shipping.TargetAdvancedCleanly(sctx.Ctx, sctx.WorkDir, upstreamURL, sctx.Run, c, facts.TargetSHA)
+			if err != nil {
+				return err
+			}
+		}
+		if !advanced {
+			return fmt.Errorf("merged PR differs from approved shipping comparison")
+		}
 	}
 	return shipping.CheckImmutableSource(sctx.Ctx, sctx.Run, sctx.Repo, sctx.WorkDir)
 }

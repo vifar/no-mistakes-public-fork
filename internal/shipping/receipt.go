@@ -157,13 +157,13 @@ func Export(ctx context.Context, database *db.DB, repo *db.Repo, runID, phase st
 	if err != nil {
 		return nil, err
 	}
-	if err := checkFacts(first, repo, facts, run.Shipping.Draft); err != nil {
+	if err := checkFacts(ctx, dir, run, first, repo, facts, run.Shipping.Draft); err != nil {
 		return nil, err
 	}
 	if run.Shipping.Draft == nil {
 		first.Draft = facts.Draft
 	}
-	if err := checkGit(ctx, dir, repo, first); err != nil {
+	if err := checkGit(ctx, dir, run, repo, first); err != nil {
 		return nil, err
 	}
 	if phase == "ci-ready" {
@@ -203,7 +203,7 @@ func Export(ctx context.Context, database *db.DB, repo *db.Repo, runID, phase st
 	if !reflect.DeepEqual(facts, afterFacts) {
 		return nil, fmt.Errorf("PR comparison moved during receipt export")
 	}
-	if err := checkGit(ctx, dir, repo, first); err != nil {
+	if err := checkGit(ctx, dir, run, repo, first); err != nil {
 		return nil, err
 	}
 	after, err := durablePayload(database, runID, phase)
@@ -358,13 +358,30 @@ func durablePayload(database *db.DB, runID, phase string) (Payload, error) {
 	return p, nil
 }
 
-func checkFacts(p Payload, repo *db.Repo, f scm.PRFacts, draft *bool) error {
-	if f.State != scm.PRStateOpen || f.URL != p.PRURL || f.SourceRepo != p.SourceRepo || f.SourceRepo != github.RepoSlug(repo.PushURL()) || f.SourceBranch != p.SourceBranch || f.HeadSHA != p.LocalHeadSHA || f.TargetRepo != github.RepoSlug(repo.UpstreamURL) || f.TargetBranch != p.TargetBranch || f.TargetSHA != p.TargetSHA || draft != nil && f.Draft != *draft {
+func checkFacts(ctx context.Context, dir string, run *db.Run, p Payload, repo *db.Repo, f scm.PRFacts, draft *bool) error {
+	if f.State != scm.PRStateOpen || f.URL != p.PRURL || f.SourceRepo != p.SourceRepo || f.SourceRepo != github.RepoSlug(repo.PushURL()) || f.SourceBranch != p.SourceBranch || f.HeadSHA != p.LocalHeadSHA || f.TargetRepo != github.RepoSlug(repo.UpstreamURL) || f.TargetBranch != p.TargetBranch || draft != nil && f.Draft != *draft {
 		return fmt.Errorf("live PR comparison differs from approved Review")
+	}
+	return checkReceiptTarget(ctx, dir, run, repo, p, f.TargetSHA)
+}
+
+func checkReceiptTarget(ctx context.Context, dir string, run *db.Run, repo *db.Repo, p Payload, tip string) error {
+	if tip == p.TargetSHA {
+		return nil
+	}
+	upstreamURL := git.ResolveUpstreamURL(ctx, dir, repo.UpstreamURL, repo.URLsVerified)
+	c := &db.ReviewComparison{TargetSHA: p.TargetSHA, HeadSHA: p.LocalHeadSHA, MergeBaseSHA: p.MergeBaseSHA}
+	advanced, err := TargetAdvancedCleanly(ctx, dir, upstreamURL, run, c, tip)
+	if err != nil {
+		return err
+	}
+	if !advanced {
+		return fmt.Errorf("live target moved after Review")
 	}
 	return nil
 }
-func checkGit(ctx context.Context, dir string, repo *db.Repo, p Payload) error {
+
+func checkGit(ctx context.Context, dir string, run *db.Run, repo *db.Repo, p Payload) error {
 	head, err := git.HeadSHA(ctx, dir)
 	if err != nil {
 		return err
@@ -386,8 +403,11 @@ func checkGit(ctx context.Context, dir string, repo *db.Repo, p Payload) error {
 	if err != nil {
 		return err
 	}
-	if source != p.LocalHeadSHA || target != p.TargetSHA {
-		return fmt.Errorf("live source or target moved after Review")
+	if source != p.LocalHeadSHA {
+		return fmt.Errorf("live source moved after Review")
+	}
+	if err := checkReceiptTarget(ctx, dir, run, repo, p, target); err != nil {
+		return err
 	}
 	base, diff, err := Compare(ctx, dir, p.TargetSHA, p.LocalHeadSHA)
 	if err != nil {
