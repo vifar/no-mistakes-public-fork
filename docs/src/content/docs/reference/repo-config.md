@@ -421,8 +421,7 @@ Explicit lint command. Run via the platform shell - `sh -c` on POSIX, `cmd.exe /
 | Default | Empty (agent auto-detects) |
 
 When set, the lint step runs this exact command and checks the exit code.
-When empty, Document repair passes include the agent-driven lint duty: one agent invocation covers both documentation and lint, and the lint step consumes that result, reporting lint-category findings with the same gate semantics (blocking findings park for a decision).
-Neither responsibility is skipped: when no usable combined result exists, the lint step runs its own agent pass. This includes the [read-only check at the Document commit cap](#documentmax_commits_per_run).
+When empty, the [Lint step rules](/no-mistakes/reference/pipeline-steps/#lint) govern combined Document/Lint housekeeping, standalone agent passes when no usable combined result exists (including after the [read-only check at the Document commit cap](#documentmax_commits_per_run)), and environment-only fix rechecks.
 
 ### commands.format
 
