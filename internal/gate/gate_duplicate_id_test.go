@@ -579,8 +579,14 @@ func TestInitAdoptsItsOwnUnregisteredGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("init of a checkout wired to its own unregistered gate: %v", err)
 	}
-	if !created || repo.ID != first.ID {
-		t.Errorf("re-registration = %+v (created=%v), want ID %q created", repo, created, first.ID)
+	// The gate was already there, so this call did not create it: created
+	// must be false, or the CLI's daemon-failure cleanup would eject (delete)
+	// a gate it does not own.
+	if created || repo.ID != first.ID {
+		t.Errorf("re-registration = %+v (created=%v), want ID %q, not created", repo, created, first.ID)
+	}
+	if !dirExists(gateDir) {
+		t.Fatalf("the adopted gate directory %s is gone", gateDir)
 	}
 	assertGateWorktreeUsable(t, gateWorktree, commit)
 	if !strings.Contains(gateRefSnapshot(t, gateDir), "refs/gate-sentinel "+commit) {
