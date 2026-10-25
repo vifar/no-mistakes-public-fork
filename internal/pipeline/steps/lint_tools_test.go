@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -301,6 +302,165 @@ func TestLintStep_HousekeepingFalseMissingClaimIsChecked(t *testing.T) {
 	}
 	if outcome.NeedsApproval || strings.Contains(outcome.Findings, "lint-missing-prettier") {
 		t.Fatalf("outcome = %+v, want the housekeeping false claim dropped", outcome)
+	}
+}
+
+func TestLintStep_WhitespacePathsCheckExactChangedFiles(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake shell binaries and whitespace paths")
+	}
+	t.Parallel()
+	for _, pkg := range []string{".", "pkg "} {
+		for _, housekeeping := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%q/housekeeping=%t", pkg, housekeeping), func(t *testing.T) {
+				t.Parallel()
+				dir, _, _ := setupGitRepo(t)
+				writeLintFixture(t, dir, map[string]string{
+					".gitignore":                       "node_modules/\n",
+					filepath.Join(pkg, "package.json"): `{"devDependencies":{"prettier":"3"}}`,
+					filepath.Join(pkg, "a.js"):         "clean\n",
+				})
+				gitCmd(t, dir, "add", "-A")
+				gitCmd(t, dir, "commit", "-m", "configure formatter")
+				baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+				gitCmd(t, dir, "branch", "-f", "main", baseSHA)
+				writeLintFixture(t, dir, map[string]string{
+					filepath.Join(pkg, " a.js"):                      "bad\n",
+					filepath.Join(pkg, "b.js "):                      "clean\n",
+					filepath.Join(pkg, "node_modules/.bin/prettier"): "#!/bin/sh\nprintf '%s\\000' \"$PWD\" \"$@\" > node_modules/.bin/invocation\nfor file do\n  [ -f \"$file\" ] || continue\n  IFS= read -r line < \"$file\"\n  if [ \"$line\" = bad ]; then echo 'unformatted changed file'; exit 1; fi\ndone\nexit 0\n",
+				})
+				gitCmd(t, dir, "add", "-A")
+				gitCmd(t, dir, "commit", "-m", "change whitespace paths")
+				headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+				ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+					return &agent.Result{Output: json.RawMessage(falseMissingPrettier)}, nil
+				}}
+				sctx := newHousekeepingContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+				sctx.Env = []string{hermeticPath(t)}
+				duty := lintDutySection(sctx, baseSHA, true)
+				if !strings.Contains(duty, `files: " a.js", "b.js "`) || (pkg != "." && !strings.Contains(duty, "run from `\"pkg \"`")) {
+					t.Fatalf("housekeeping prompt lost whitespace paths:\n%s", duty)
+				}
+				if housekeeping {
+					sctx.Shared.SetHousekeepingLint(pipeline.HousekeepingLintResult{FindingsJSON: falseMissingPrettier})
+				}
+				outcome, err := (&LintStep{}).Execute(sctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !housekeeping && (!strings.Contains(ag.calls[0].Prompt, `files: " a.js", "b.js "`) || (pkg != "." && !strings.Contains(ag.calls[0].Prompt, "run from `\"pkg \"`"))) {
+					t.Fatalf("lint prompt lost whitespace paths:\n%s", ag.calls[0].Prompt)
+				}
+				findings, err := types.ParseFindingsJSON(outcome.Findings)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !outcome.NeedsApproval || len(findings.Items) != 1 || findings.Items[0].Category != types.FindingCategoryLint || findings.Items[0].Action != types.ActionAutoFix || !strings.Contains(findings.Items[0].Description, "unformatted changed file") {
+					t.Fatalf("outcome=%+v findings=%+v; want the changed file's formatter failure", outcome, findings)
+				}
+				raw, err := os.ReadFile(filepath.Join(dir, pkg, "node_modules/.bin/invocation"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				got := strings.Split(string(raw), "\x00")
+				wantDir, err := filepath.EvalSymlinks(filepath.Join(dir, pkg))
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := []string{wantDir, "--check", "--ignore-unknown", "./ a.js", "./b.js ", ""}
+				if !reflect.DeepEqual(got, want) {
+					t.Fatalf("invocation=%q, want %q", got, want)
+				}
+			})
+		}
+	}
+}
+
+func TestLintStep_WhitespacePackageEnvironmentRecheckPreservesIdentity(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake shell binaries and whitespace paths")
+	}
+	t.Parallel()
+	for _, pkg := range []string{"pkg ", " pkg \t\n%@ "} {
+		t.Run(fmt.Sprintf("%q", pkg), func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, _ := setupGitRepo(t)
+			writeLintFixture(t, dir, map[string]string{
+				".gitignore":                       "node_modules/\n",
+				filepath.Join(pkg, "package.json"): `{"devDependencies":{"prettier":"3"}}`,
+				filepath.Join(pkg, "a.js"):         "clean\n",
+				filepath.Join(strings.TrimSpace(pkg), "node_modules/.bin/prettier"): "#!/bin/sh\nexit 0\n",
+			})
+			gitCmd(t, dir, "add", "-A")
+			gitCmd(t, dir, "commit", "-m", "configure whitespace package")
+			headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+			ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+				return &agent.Result{Output: json.RawMessage(falseMissingPrettier)}, nil
+			}}
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx.Env = []string{hermeticPath(t)}
+			outcome, err := (&LintStep{}).Execute(sctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			previous, err := types.ParseFindingsJSON(outcome.Findings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !outcome.NeedsApproval || len(previous.Items) != 1 || previous.Items[0].Category != types.FindingCategoryLintEnvironment {
+				t.Fatalf("outcome=%+v; want the package's unavailable formatter", outcome)
+			}
+			previous = types.NormalizeFindings(previous, "lint")
+			sctx.PreviousFindings, err = types.MarshalFindingsJSON(previous)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sctx.Fixing = true
+			outcome, err = (&LintStep{}).Execute(sctx)
+			if err != nil || outcome == nil || !outcome.NeedsApproval || len(ag.calls) != 1 {
+				t.Fatalf("outcome=%+v error=%v calls=%d; want re-park despite the other package's binary", outcome, err, len(ag.calls))
+			}
+			writeLintFixture(t, dir, map[string]string{
+				filepath.Join(pkg, "node_modules/.bin/prettier"): "#!/bin/sh\necho checked > node_modules/.bin/checked\nexit 0\n",
+			})
+			outcome, err = (&LintStep{}).Execute(sctx)
+			if err != nil || outcome == nil || outcome.NeedsApproval || len(ag.calls) != 2 {
+				t.Fatalf("outcome=%+v error=%v calls=%d; want normal lint after installation", outcome, err, len(ag.calls))
+			}
+			if _, err := os.Stat(filepath.Join(dir, pkg, "node_modules/.bin/checked")); err != nil {
+				t.Fatalf("installed package tool was not checked: %v", err)
+			}
+		})
+	}
+}
+
+func TestLintPlanID_PreservesDirectoryThroughFindingNormalization(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ dir, suffix string }{
+		{".", ""},
+		{"controller", "@controller"},
+		{"pkg ", "@pkg%20"},
+		{" pkg\t\n", "@%20pkg%09%0A"},
+		{"a/b", "@a%2Fb"},
+		{"pkg%20", "@pkg%2520"},
+		{"pkg@日本語", "@pkg@%E6%97%A5%E6%9C%AC%E8%AA%9E"},
+	} {
+		for _, base := range []string{"lint-missing-prettier", "lint-prettier-check"} {
+			id := lintPlanID(base, tc.dir)
+			if id != base+tc.suffix {
+				t.Fatalf("id=%q for %q; want %q", id, tc.dir, base+tc.suffix)
+			}
+			findings := types.NormalizeFindings(Findings{Items: []Finding{{ID: id}}}, "lint")
+			if findings.Items[0].ID != id {
+				t.Fatalf("normalization changed ID %q to %q", id, findings.Items[0].ID)
+			}
+			if base == "lint-missing-prettier" {
+				tool, dir, ok := lintMissingToolClaim(findings.Items[0])
+				if !ok || tool != "prettier" || dir != tc.dir {
+					t.Fatalf("decoded %q as (%q, %q, %t), want prettier in %q", id, tool, dir, ok, tc.dir)
+				}
+			}
+		}
 	}
 }
 

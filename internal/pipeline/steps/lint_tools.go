@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -79,7 +81,7 @@ func lintPlanID(base, dir string) string {
 	if dir == "." {
 		return base
 	}
-	return base + "@" + dir
+	return base + "@" + url.PathEscape(dir)
 }
 
 // lintToolPlan is one tool resolved for the changed files of one package.
@@ -246,15 +248,15 @@ func resolveLintBinary(workDir, dir, bin string, lookPath func(string) string) s
 
 // lintToolsForStep resolves the known tools for the change under review.
 func lintToolsForStep(sctx *pipeline.StepContext, baseSHA string) []lintToolPlan {
-	out, err := git.Run(sctx.Ctx, sctx.WorkDir, "diff", "--name-only", "-z", "--no-renames", "--diff-filter=d", baseSHA)
+	out, err := git.RunRaw(sctx.Ctx, sctx.WorkDir, "diff", "--name-only", "-z", "--no-renames", "--diff-filter=d", baseSHA)
 	if err != nil {
 		sctx.Log(fmt.Sprintf("warning: could not list changed files for lint tool resolution: %v", err))
 		return nil
 	}
-	if out == "" {
+	if len(out) == 0 {
 		return nil
 	}
-	return resolveLintTools(sctx.WorkDir, changedPathList(out), stepLookPath(sctx))
+	return resolveLintTools(sctx.WorkDir, changedPathList(string(out)), stepLookPath(sctx))
 }
 
 // stepLookPath resolves a program on the step environment's PATH.
@@ -277,15 +279,25 @@ func lintToolsPromptSection(plans []lintToolPlan) string {
 	var b strings.Builder
 	b.WriteString("\n\nResolved lint tools (no-mistakes resolved each tool from the package that configures it; run each from its package directory, not the repository root, over its listed files, whose paths are relative to that directory):")
 	for _, plan := range plans {
-		files := sanitizePromptText(strings.Join(plan.Files, ", "))
+		files := make([]string, len(plan.Files))
+		for i, file := range plan.Files {
+			files[i] = lintPromptPath(file)
+		}
 		if plan.missing() {
-			fmt.Fprintf(&b, "\n- %s (configured by %s): not installed in %s/node_modules/.bin or any parent package, and not on PATH; files: %s. If these files need it, report it with id %q and action \"ask-user\".", plan.Tool.Name, sanitizePromptText(plan.ConfiguredBy), sanitizePromptText(plan.Dir), files, sanitizePromptText(lintPlanID(lintMissingIDPrefix+plan.Tool.Name, plan.Dir)))
+			fmt.Fprintf(&b, "\n- %s (configured by %s): not installed in %s/node_modules/.bin or any parent package, and not on PATH; files: %s. If these files need it, report it with id %q and action \"ask-user\".", plan.Tool.Name, lintPromptPath(plan.ConfiguredBy), lintPromptPath(plan.Dir), strings.Join(files, ", "), lintPlanID(lintMissingIDPrefix+plan.Tool.Name, plan.Dir))
 			continue
 		}
-		fmt.Fprintf(&b, "\n- %s (configured by %s): run from `%s` with `%s`; files: %s", plan.Tool.Name, sanitizePromptText(plan.ConfiguredBy), sanitizePromptText(plan.Dir), sanitizePromptText(plan.binaryFromDir()), files)
+		fmt.Fprintf(&b, "\n- %s (configured by %s): run from `%s` with `%s`; files: %s", plan.Tool.Name, lintPromptPath(plan.ConfiguredBy), lintPromptPath(plan.Dir), lintPromptPath(plan.binaryFromDir()), strings.Join(files, ", "))
 	}
 	b.WriteString("\n- A tool listed with a binary is installed: never report it as missing or unavailable. If another tool you need is unavailable, report it with id \"" + lintMissingIDPrefix + "<tool>\" and action \"ask-user\".\n")
 	return b.String()
+}
+
+func lintPromptPath(value string) string {
+	if sanitizePromptText(value) != value {
+		return strconv.Quote(value)
+	}
+	return value
 }
 
 // isLintEnvironmentFinding reports a finding about the run's environment (a
@@ -303,6 +315,11 @@ func lintMissingToolClaim(f Finding) (tool, dir string, ok bool) {
 		tool, dir, _ = strings.Cut(raw[len(lintMissingIDPrefix):], "@")
 		if dir == "" {
 			dir = "."
+		}
+		var err error
+		dir, err = url.PathUnescape(dir)
+		if err != nil {
+			return "", "", false
 		}
 		return strings.ToLower(tool), dir, true
 	}
@@ -551,7 +568,7 @@ func lintEnvironmentRecheck(sctx *pipeline.StepContext) (*pipeline.StepOutcome, 
 // lintRepoRelativeDir returns dir as a clean, slash-separated path inside
 // the repository, or false when it is absolute or escapes the root.
 func lintRepoRelativeDir(dir string) (string, bool) {
-	dir = filepath.ToSlash(strings.TrimSpace(dir))
+	dir = filepath.ToSlash(dir)
 	if dir == "" || path.IsAbs(dir) || filepath.IsAbs(filepath.FromSlash(dir)) || filepath.VolumeName(filepath.FromSlash(dir)) != "" {
 		return "", false
 	}
