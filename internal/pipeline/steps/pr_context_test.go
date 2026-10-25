@@ -21,7 +21,8 @@ func TestPRContextGuardRechecksTerminalCIAgainstLivePR(t *testing.T) {
 		movedHead, movedTarget, missingTarget, pending, wantError bool
 	}{
 		{name: "pending closed", pending: true, recorded: "closed", liveState: "closed", liveSource: "test/repo", liveBase: "main"},
-		{name: "target advanced after close", recorded: "closed", liveState: "closed", liveSource: "test/repo", liveBase: "main", movedTarget: true, wantError: true},
+		// A target that only moved is not a changed comparison, closed or not (#237).
+		{name: "target advanced after close", recorded: "closed", liveState: "closed", liveSource: "test/repo", liveBase: "main", movedTarget: true},
 		{name: "missing live target", recorded: "closed", liveState: "closed", liveSource: "test/repo", liveBase: "main", missingTarget: true, wantError: true},
 		{name: "closed", recorded: "closed", liveState: "closed", liveSource: "test/repo", liveBase: "main"},
 		{name: "reopened", recorded: "closed", liveState: "open", liveSource: "test/repo", liveBase: "main", wantError: true},
@@ -257,6 +258,9 @@ func TestPRContextGuardPinsActualTargetAndStopsAfterTargetMoves(t *testing.T) {
 	dir, mainSHA, headSHA := setupGitRepo(t)
 	ensureLocalBranch(t, dir, "develop", mainSHA)
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, mainSHA, headSHA, config.Commands{})
+	// Exercises the integrate-every-move comparison machinery; under the
+	// default a clean target advance is held instead (#237).
+	sctx.Config.Rebase.Integrate = config.RebaseIntegrateAlways
 	selection := pipeline.PRTargetSelection{TargetBranch: "develop"}
 	first, err := guardPRContextWithSelection(sctx, types.StepRebase, selection, false)
 	if err != nil || first.RestartFrom != "" {
@@ -442,7 +446,9 @@ func TestPRContextGuardProvesMergedComparison(t *testing.T) {
 		{name: "multiple rebased commits", mode: "rebase"},
 		{name: "target advances after merge", mode: "merge", advance: true},
 		{name: "merge changes result", mode: "merge", changedResult: true, wantError: true},
-		{name: "target changed before merge", mode: "merge", targetMoved: true, wantError: true},
+		// #161/#237: other merges moved the target before this one; the merge
+		// commit's first parent proves exactly the reviewed change landed.
+		{name: "target changed before merge", mode: "merge", targetMoved: true},
 		{name: "qualified advanced target merge", mode: "merge", targetMoved: true, qualified: true},
 		{name: "qualified advanced target squash", mode: "squash", targetMoved: true, qualified: true},
 		{name: "qualified advanced target rebase", mode: "rebase", targetMoved: true, qualified: true},
@@ -450,9 +456,9 @@ func TestPRContextGuardProvesMergedComparison(t *testing.T) {
 		{name: "qualified advanced target with later advance", mode: "merge", targetMoved: true, qualified: true, advance: true},
 		{name: "qualified advanced target changed result", mode: "merge", targetMoved: true, qualified: true, changedResult: true, wantError: true},
 		{name: "qualified advanced target corrupt rebased prefix", mode: "rebase", targetMoved: true, qualified: true, earlyChange: true, wantError: true},
-		{name: "qualified advanced target without observation", mode: "merge", targetMoved: true, qualified: true, omitObservation: true, wantError: true},
-		{name: "qualified advanced target strict protection", mode: "merge", targetMoved: true, qualified: true, strict: true, wantError: true},
-		{name: "qualified advanced target strict shipping", mode: "merge", targetMoved: true, qualified: true, shipping: true, wantError: true},
+		{name: "qualified advanced target without observation", mode: "merge", targetMoved: true, qualified: true, omitObservation: true},
+		{name: "qualified advanced target strict protection", mode: "merge", targetMoved: true, qualified: true, strict: true},
+		{name: "qualified advanced target strict shipping", mode: "merge", targetMoved: true, qualified: true, shipping: true},
 		{name: "qualified stacked target merge", mode: "merge", targetMoved: true, qualified: true, stacked: true},
 		{name: "qualified stacked target squash", mode: "squash", targetMoved: true, qualified: true, stacked: true},
 		{name: "qualified stacked target rebase", mode: "rebase", targetMoved: true, qualified: true, stacked: true},

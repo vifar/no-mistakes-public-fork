@@ -73,7 +73,7 @@ func TestReplayOriginalMessageBytes(t *testing.T) {
 				return &agent.Result{}, nil
 			}}
 			c := f.context(t, ag, "rebase")
-			if err := rebaseWithAgent(c.Ctx, c, "origin/main"); err != nil {
+			if err := rebaseWithAgent(c.Ctx, c, "origin/main", false); err != nil {
 				t.Fatal(err)
 			}
 			if got := storedReplayMessage(t, f.dir, "HEAD"); !bytes.Equal(got, message) {
@@ -122,10 +122,10 @@ func TestImportedReplayOrderedIntegrations(t *testing.T) {
 			integrate := func(target string) {
 				t.Helper()
 				if strings.HasPrefix(entry, "automatic") {
-					if conflicts, err := tryRebase(c.Ctx, c, target); err != nil || len(conflicts) > 0 {
+					if conflicts, err := tryRebase(c.Ctx, c, target, false); err != nil || len(conflicts) > 0 {
 						t.Fatalf("integration %s = %v, %v", target, conflicts, err)
 					}
-				} else if err := rebaseWithAgent(c.Ctx, c, target); err != nil {
+				} else if err := rebaseWithAgent(c.Ctx, c, target, false); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := updateHeadSHA(c.Ctx, c, "main"); err != nil {
@@ -208,10 +208,10 @@ func TestImportedTargetDivergentRebase(t *testing.T) {
 				return nil, nil
 			}}, "rebase")
 			if entry == "automatic" {
-				if conflicts, err := tryRebase(c.Ctx, c, "origin/main"); err != nil || len(conflicts) > 0 {
+				if conflicts, err := tryRebase(c.Ctx, c, "origin/main", false); err != nil || len(conflicts) > 0 {
 					t.Fatalf("rebase = %v, %v", conflicts, err)
 				}
-			} else if err := rebaseWithAgent(c.Ctx, c, "origin/main"); err != nil {
+			} else if err := rebaseWithAgent(c.Ctx, c, "origin/main", false); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := updateHeadSHA(c.Ctx, c, "main"); err != nil {

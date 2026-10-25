@@ -146,18 +146,19 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.Step
 		if err != nil {
 			return nil, err
 		}
-		for _, target := range targets {
+		for i, target := range targets {
+			base := isPRBaseTarget(i, targets, branch, defaultBranch)
 			var err error
 			if merging {
-				err = mergeWithAgent(ctx, sctx, target)
+				err = mergeWithAgent(ctx, sctx, target, base)
 			} else {
-				err = rebaseWithAgent(ctx, sctx, target)
+				err = rebaseWithAgent(ctx, sctx, target, base)
 			}
 			if err != nil {
 				return nil, err
 			}
 			if checkedTarget != "" {
-				if err := verifyRewindIntegration(sctx, target); err != nil {
+				if err := verifyRewindIntegration(sctx, target, base); err != nil {
 					return nil, err
 				}
 			}
@@ -182,20 +183,21 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.Step
 	// Normal mode: try all integrations, track which targets had conflicts
 	var conflictTargets []string
 	var conflictFindings []Finding
-	for _, target := range targets {
+	for i, target := range targets {
+		base := isPRBaseTarget(i, targets, branch, defaultBranch)
 		var conflictFiles []string
 		var err error
 		if merging {
-			conflictFiles, err = tryMerge(ctx, sctx, target)
+			conflictFiles, err = tryMerge(ctx, sctx, target, base)
 		} else {
-			conflictFiles, err = tryRebase(ctx, sctx, target)
+			conflictFiles, err = tryRebase(ctx, sctx, target, base)
 		}
 		if err != nil {
 			return nil, err
 		}
 
 		if checkedTarget != "" && len(conflictFiles) == 0 {
-			if err := verifyRewindIntegration(sctx, target); err != nil {
+			if err := verifyRewindIntegration(sctx, target, base); err != nil {
 				return nil, err
 			}
 		}
@@ -230,6 +232,15 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.Step
 	}
 
 	return updateHeadSHA(ctx, sctx, defaultBranch, checkedTarget)
+}
+
+// isPRBaseTarget reports whether targets[i] is the PR base rather than the
+// pushed source branch. Every target list ends with the base when the branch
+// is not the base itself (rebaseTargetsForBranch, forcePushRebaseTargets, and
+// checkedRewindTargets all append it last). A branch that IS the base has no
+// base target: publishing it must fast-forward, so it integrates as before.
+func isPRBaseTarget(i int, targets []string, branch, defaultBranch string) bool {
+	return branch != defaultBranch && i == len(targets)-1
 }
 
 // rebaseTargets returns the ordered list of refs to rebase onto.
@@ -488,8 +499,8 @@ func isRemoteBranchRewritten(ctx context.Context, workDir, remoteRef string) boo
 
 // tryRebase attempts a rebase onto targetRef. Returns conflicted files when the
 // rebase stops on merge conflicts. The rebase is aborted before returning.
-func tryRebase(ctx context.Context, sctx *pipeline.StepContext, targetRef string) ([]string, error) {
-	skip, targetSHA, err := shouldSkipRebase(ctx, sctx, targetRef)
+func tryRebase(ctx context.Context, sctx *pipeline.StepContext, targetRef string, base bool) ([]string, error) {
+	skip, targetSHA, err := shouldSkipRebase(ctx, sctx, targetRef, base)
 	if err != nil {
 		return nil, err
 	}
@@ -511,8 +522,8 @@ func tryRebase(ctx context.Context, sctx *pipeline.StepContext, targetRef string
 }
 
 // rebaseWithAgent performs a rebase and uses the agent to resolve any conflicts.
-func rebaseWithAgent(ctx context.Context, sctx *pipeline.StepContext, targetRef string) error {
-	skip, targetSHA, err := shouldSkipRebase(ctx, sctx, targetRef)
+func rebaseWithAgent(ctx context.Context, sctx *pipeline.StepContext, targetRef string, base bool) error {
+	skip, targetSHA, err := shouldSkipRebase(ctx, sctx, targetRef, base)
 	if err != nil {
 		return err
 	}
@@ -585,6 +596,14 @@ func mergesMovedBase(sctx *pipeline.StepContext) bool {
 	return sctx.Config != nil && sctx.Config.Rebase.Strategy == config.RebaseStrategyMerge
 }
 
+// keepsCleanHeads reports whether this run integrates the PR base only on a
+// conflict (rebase.integrate: on-conflict, the default) rather than on every
+// move (always). It also decides whether a target that merely moved is held
+// against the run's comparison instead of counted as a change (#237).
+func keepsCleanHeads(sctx *pipeline.StepContext) bool {
+	return sctx == nil || sctx.Config == nil || sctx.Config.Rebase.Integrate != config.RebaseIntegrateAlways
+}
+
 // integrationVerb names the shape in log lines and findings, so a run reads as
 // what it actually did rather than as the step's historical name.
 func integrationVerb(merging bool) string {
@@ -607,8 +626,8 @@ func mergeArgs(targetRef string) []string {
 // tryMerge is merge mode's counterpart to tryRebase: it attempts to merge
 // targetRef into the branch and returns the conflicted files when the merge
 // stops on conflicts, aborting before returning.
-func tryMerge(ctx context.Context, sctx *pipeline.StepContext, targetRef string) ([]string, error) {
-	skip, targetSHA, err := shouldSkipRebase(ctx, sctx, targetRef)
+func tryMerge(ctx context.Context, sctx *pipeline.StepContext, targetRef string, base bool) ([]string, error) {
+	skip, targetSHA, err := shouldSkipRebase(ctx, sctx, targetRef, base)
 	if err != nil {
 		return nil, err
 	}
@@ -637,8 +656,8 @@ func tryMerge(ctx context.Context, sctx *pipeline.StepContext, targetRef string)
 // is in the way, and a rebase leaves no evidence that anything was deleted. A
 // merge commit does, so the prompt asks for the resolution that commit can
 // actually be audited against: keep what both sides introduced.
-func mergeWithAgent(ctx context.Context, sctx *pipeline.StepContext, targetRef string) error {
-	skip, targetSHA, err := shouldSkipRebase(ctx, sctx, targetRef)
+func mergeWithAgent(ctx context.Context, sctx *pipeline.StepContext, targetRef string, base bool) error {
+	skip, targetSHA, err := shouldSkipRebase(ctx, sctx, targetRef, base)
 	if err != nil {
 		return err
 	}
@@ -785,8 +804,20 @@ func restorePreMergeHead(ctx context.Context, sctx *pipeline.StepContext, preMer
 }
 
 // shouldSkipRebase checks whether a rebase onto targetRef can be skipped.
-// Returns true if targetRef doesn't exist, is already merged, or can be fast-forwarded.
-func shouldSkipRebase(ctx context.Context, sctx *pipeline.StepContext, targetRef string) (bool, string, error) {
+// Returns true if targetRef doesn't exist, is already merged, or can be
+// fast-forwarded - and, for the PR base (base), whenever the head merges into
+// it without a conflict.
+//
+// The PR base is never integrated just because it moved (issue #237). A pull
+// request merges from its own head, so a head that merges cleanly needs no
+// rewrite: rebasing it anyway mints a new head nobody asked for, and that new
+// head is what strands custody when the run is cancelled or aborted. Only a
+// real conflict, proven by a three-way merge of the head itself, integrates
+// the base - by rebase or merge exactly as before. This includes a head that
+// is strictly behind the base: it is kept rather than reset onto it. The
+// pushed source branch is not the base and keeps fast-forward and rebase,
+// because publication must contain the commits already on the remote branch.
+func shouldSkipRebase(ctx context.Context, sctx *pipeline.StepContext, targetRef string, base bool) (bool, string, error) {
 	targetSHA, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", targetRef+"^{commit}")
 	if err != nil {
 
@@ -815,6 +846,17 @@ func shouldSkipRebase(ctx context.Context, sctx *pipeline.StepContext, targetRef
 	if _, err := git.Run(ctx, sctx.WorkDir, "merge-base", "--is-ancestor", targetSHA, "HEAD"); err == nil {
 		sctx.Log(fmt.Sprintf("already ahead of %s", targetRef))
 		return true, targetSHA, nil
+	}
+	if base && keepsCleanHeads(sctx) {
+		clean, err := git.MergesCleanly(ctx, sctx.WorkDir, targetSHA, localSHA)
+		if err != nil {
+			return false, "", fmt.Errorf("check head against %s: %w", targetRef, err)
+		}
+		if clean {
+			sctx.Log(fmt.Sprintf("head %s merges cleanly into %s at %s; keeping it without a rebase", shortSHA(localSHA), targetRef, shortSHA(targetSHA)))
+			return true, targetSHA, nil
+		}
+		sctx.Log(fmt.Sprintf("head %s conflicts with %s at %s", shortSHA(localSHA), targetRef, shortSHA(targetSHA)))
 	}
 	if _, err := git.Run(ctx, sctx.WorkDir, "merge-base", "--is-ancestor", "HEAD", targetSHA); err == nil {
 		sctx.Log(fmt.Sprintf("fast-forwarding to %s", targetRef))
@@ -894,7 +936,7 @@ func dedupeRebaseFindings(findings []Finding) []Finding {
 func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext, targetBranch string, checkedTarget ...string) (*pipeline.StepOutcome, error) {
 	pinned := len(checkedTarget) > 0 && checkedTarget[0] != ""
 	if pinned {
-		if err := verifyRewindIntegration(sctx, checkedTarget[0]); err != nil {
+		if err := verifyRewindIntegration(sctx, checkedTarget[0], true); err != nil {
 			return nil, err
 		}
 	}

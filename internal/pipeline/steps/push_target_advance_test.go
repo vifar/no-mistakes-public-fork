@@ -26,6 +26,8 @@ func publicationFixture(t *testing.T) (*pipeline.StepContext, pipeline.PRTargetS
 	gitCmd(t, dir, "remote", "set-url", "origin", remote)
 	c.Repo.UpstreamURL = remote
 	c.Config.Rebase.MaxTargetAdvanceRewinds = 3
+	// Exercises the publication rewind itself; see rewindFixture.
+	c.Config.Rebase.Integrate = config.RebaseIntegrateAlways
 	selected := pipeline.PRTargetSelection{TargetBranch: "main"}
 	if _, err := guardPRContextWithSelection(c, types.StepRebase, selected, false); err != nil {
 		t.Fatal(err)

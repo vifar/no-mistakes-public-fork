@@ -161,6 +161,20 @@ const (
 	// merge shape buys.
 	DefaultRebaseStrategy = RebaseStrategyRebase
 
+	// RebaseIntegrateOnConflict integrates the PR base only when the head
+	// conflicts with it. A head that merges cleanly is kept as it is, and a
+	// base that merely moves under it is not drift (issue #237).
+	RebaseIntegrateOnConflict = "on-conflict"
+	// RebaseIntegrateAlways integrates every base that moved, keeping each
+	// head up to date with its target. It is for targets whose protection
+	// requires an up-to-date branch before a merge.
+	RebaseIntegrateAlways = "always"
+	// DefaultRebaseIntegrate is when the rebase step integrates the PR base
+	// while rebase.integrate is unset. Pull requests here merge from their own
+	// head, so integrating a base the head merges cleanly into only mints a
+	// new head - and new heads are what strand custody across runs.
+	DefaultRebaseIntegrate = RebaseIntegrateOnConflict
+
 	// DefaultMaxTargetAdvanceRewinds bounds unpublished target fast-forwards per run.
 	DefaultMaxTargetAdvanceRewinds = 3
 	// DefaultEvalMaxCases caps the auto-captured local eval corpus. Cases
@@ -864,6 +878,7 @@ func (c CI) CheckScopePolicy() scm.CheckScopePolicy {
 // RebaseRaw is the YAML representation of rebase-step settings.
 type RebaseRaw struct {
 	Strategy                string `yaml:"strategy"`
+	Integrate               string `yaml:"integrate"`
 	MaxTargetAdvanceRewinds *int   `yaml:"max_target_advance_rewinds"`
 }
 
@@ -895,6 +910,18 @@ type Rebase struct {
 	// The cost is a merge commit per integration. On a squash-merged default
 	// branch they never reach it; on a merge-committed one they do.
 	Strategy string
+
+	// Integrate selects WHEN the PR base is integrated, independent of how.
+	//
+	// "on-conflict" (default): only when the head conflicts with the base,
+	// proven by a three-way merge of the head itself. A head that merges
+	// cleanly is kept, and a target that fast-forwards while the head still
+	// merges cleanly with an unchanged diff keeps the run's comparison,
+	// approvals and evidence instead of rewinding or restarting it.
+	//
+	// "always": integrate every moved base and treat every target move as a
+	// comparison change, the behaviour before issue #237.
+	Integrate string
 }
 
 // AutoFix holds resolved per-step auto-fix attempt limits.
@@ -3865,7 +3892,7 @@ func ciDefaults() CI {
 
 // rebaseDefaults returns the default rebase-step settings.
 func rebaseDefaults() Rebase {
-	return Rebase{Strategy: DefaultRebaseStrategy, MaxTargetAdvanceRewinds: DefaultMaxTargetAdvanceRewinds}
+	return Rebase{Strategy: DefaultRebaseStrategy, Integrate: DefaultRebaseIntegrate, MaxTargetAdvanceRewinds: DefaultMaxTargetAdvanceRewinds}
 }
 
 // applyRebaseOverrides applies raw rebase settings onto resolved defaults.
@@ -3878,6 +3905,9 @@ func applyRebaseOverrides(dst *Rebase, src *RebaseRaw) {
 	if v := strings.TrimSpace(src.Strategy); v != "" {
 		dst.Strategy = v
 	}
+	if v := strings.TrimSpace(src.Integrate); v != "" {
+		dst.Integrate = v
+	}
 }
 
 // validateRebaseRaw fails the config closed on an unrecognized rebase.strategy.
@@ -3886,6 +3916,11 @@ func applyRebaseOverrides(dst *Rebase, src *RebaseRaw) {
 func validateRebaseRaw(r RebaseRaw) error {
 	if r.MaxTargetAdvanceRewinds != nil && *r.MaxTargetAdvanceRewinds < 0 {
 		return fmt.Errorf("rebase.max_target_advance_rewinds must be non-negative")
+	}
+	switch strings.TrimSpace(r.Integrate) {
+	case "", RebaseIntegrateOnConflict, RebaseIntegrateAlways:
+	default:
+		return fmt.Errorf("rebase.integrate: %q is not valid (want %q or %q)", r.Integrate, RebaseIntegrateOnConflict, RebaseIntegrateAlways)
 	}
 	switch strings.TrimSpace(r.Strategy) {
 	case "", RebaseStrategyRebase, RebaseStrategyMerge:

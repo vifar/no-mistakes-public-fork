@@ -29,6 +29,11 @@ func rewindFixture(t *testing.T) (*pipeline.StepContext, pipeline.PRTargetSelect
 	gitCmd(t, dir, "remote", "set-url", "origin", remote)
 	c.Repo.UpstreamURL = remote
 	c.Config.Rebase.MaxTargetAdvanceRewinds = 3
+	// advanceRewindTarget adds an unrelated file, which rebase.integrate's
+	// default holds as a pure target advance (#237). These tests exercise
+	// the rewind machinery itself, so they integrate every moved target;
+	// pure_target_advance_test.go covers the default.
+	c.Config.Rebase.Integrate = config.RebaseIntegrateAlways
 	selected := pipeline.PRTargetSelection{TargetBranch: "main"}
 	if _, err := guardPRContextWithSelection(c, types.StepRebase, selected, false); err != nil {
 		t.Fatal(err)
@@ -244,11 +249,11 @@ func TestTargetRewindCheckedSHAsSurviveSharedTrackingRefMoves(t *testing.T) {
 			gitCmd(t, c.WorkDir, "fetch", "origin", "+main:refs/remotes/origin/main")
 			for _, target := range targets {
 				if strategy == config.RebaseStrategyMerge {
-					if _, err := tryMerge(c.Ctx, c, target); err != nil {
+					if _, err := tryMerge(c.Ctx, c, target, false); err != nil {
 						t.Fatal(err)
 					}
 				} else {
-					if _, err := tryRebase(c.Ctx, c, target); err != nil {
+					if _, err := tryRebase(c.Ctx, c, target, false); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -531,14 +536,14 @@ func TestTargetRewindConflictFixesUseExactCheckedSHA(t *testing.T) {
 			}}
 			for _, target := range targets {
 				if strategy == config.RebaseStrategyMerge {
-					err = mergeWithAgent(c.Ctx, c, target)
+					err = mergeWithAgent(c.Ctx, c, target, false)
 				} else {
-					err = rebaseWithAgent(c.Ctx, c, target)
+					err = rebaseWithAgent(c.Ctx, c, target, false)
 				}
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err = verifyRewindIntegration(c, target); err != nil {
+				if err = verifyRewindIntegration(c, target, false); err != nil {
 					t.Fatal(err)
 				}
 			}

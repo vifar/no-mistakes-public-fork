@@ -393,8 +393,14 @@ func checkGit(ctx context.Context, dir string, repo *db.Repo, p Payload) error {
 	if err != nil {
 		return err
 	}
-	if p.ShippingMode == types.ShippingFull && base != p.TargetSHA {
-		return fmt.Errorf("strict full shipping target is absent from reviewed head; rerun Rebase")
+	if p.ShippingMode == types.ShippingFull {
+		integrated, err := TargetIntegrated(ctx, dir, p.TargetSHA, base, p.LocalHeadSHA, true)
+		if err != nil {
+			return err
+		}
+		if !integrated {
+			return fmt.Errorf("strict full shipping head conflicts with its target; rerun Rebase")
+		}
 	}
 	if base != p.MergeBaseSHA || diff != p.DiffDigest {
 		return fmt.Errorf("raw reviewed comparison changed")

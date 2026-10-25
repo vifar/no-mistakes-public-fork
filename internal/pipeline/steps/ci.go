@@ -893,7 +893,15 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			if err != nil {
 				return nil, err
 			}
-			if tip != comparison.TargetSHA {
+			advanced := false
+			if tip != comparison.TargetSHA && keepsCleanHeads(sctx) {
+				// A target that merely moved keeps the approved comparison
+				// and the CI already observed on its head (#237).
+				if advanced, err = shipping.TargetAdvancedCleanly(ctx, sctx.WorkDir, upstreamURL, sctx.Run, comparison, tip); err != nil {
+					return nil, err
+				}
+			}
+			if tip != comparison.TargetSHA && !advanced {
 				if err := setCIMonitorReadiness(sctx, false, false); err != nil {
 					return nil, err
 				}

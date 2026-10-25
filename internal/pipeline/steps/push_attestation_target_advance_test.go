@@ -51,6 +51,9 @@ func unpublishedAttestationFixture(t *testing.T) (*pipeline.StepContext, string,
 	}}
 	prURL := "https://github.com/test/repo/pull/42"
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	// Exercises the integrate-every-move comparison machinery; under the
+	// default a clean target advance is held instead (#237).
+	sctx.Config.Rebase.Integrate = config.RebaseIntegrateAlways
 	sctx.Env = append(fakeCIGH(t, "OPEN", `[{"name":"test","state":"SUCCESS","bucket":"pass"}]`),
 		"FAKE_CLI_PR_HEAD_SHA="+headSHA,
 		`FAKE_CLI_PR_LIST_JSON=[{"number":42,"url":"https://github.com/test/repo/pull/42","baseRefName":"main"}]`,

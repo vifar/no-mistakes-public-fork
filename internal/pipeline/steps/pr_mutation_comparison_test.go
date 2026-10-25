@@ -75,9 +75,14 @@ func TestCIMonitorReadinessRequiresFreshExactComparison(t *testing.T) {
 		{"unreadable", func(_ *testing.T, _ *pipeline.StepContext, h *mutationComparisonHost) {
 			h.err = errors.New("provider unavailable")
 		}},
+		// A target the head conflicts with: a pure advance is held (#237).
 		{"target advanced", func(t *testing.T, sctx *pipeline.StepContext, _ *mutationComparisonHost) {
 			gitCmd(t, sctx.WorkDir, "checkout", "main")
-			gitCmd(t, sctx.WorkDir, "commit", "--allow-empty", "-m", "advance target")
+			if err := os.WriteFile(filepath.Join(sctx.WorkDir, "feature.txt"), []byte("target moved\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, sctx.WorkDir, "add", "feature.txt")
+			gitCmd(t, sctx.WorkDir, "commit", "-m", "advance target")
 			gitCmd(t, sctx.WorkDir, "checkout", "feature")
 		}},
 	} {
@@ -209,6 +214,9 @@ func bindPublicationComparison(t *testing.T, sctx *pipeline.StepContext, head st
 func publicationAttestationFixture(t *testing.T) (*ciRepairFixture, string) {
 	t.Helper()
 	f := newCIRepairFixture(t, false, writeCIFix)
+	// Exercises the integrate-every-move comparison machinery; under the
+	// default a clean target advance is held instead (#237).
+	f.sctx.Config.Rebase.Integrate = config.RebaseIntegrateAlways
 	bindPublicationComparison(t, f.sctx, f.headSHA)
 	bodyFile := filepath.Join(t.TempDir(), "pr-body.md")
 	if err := os.WriteFile(bodyFile, []byte(compliantPipelineBody(t, f.headSHA)), 0o644); err != nil {
@@ -312,6 +320,9 @@ func mutationPRFactsJSON(state, head, base string) string {
 
 func TestPRMutationComparisonRejectsTargetAdvanceDuringDraft(t *testing.T) {
 	sctx, host, pr := mutationComparisonFixture(t)
+	// Exercises the integrate-every-move comparison machinery; under the
+	// default a clean target advance is held instead (#237).
+	sctx.Config.Rebase.Integrate = config.RebaseIntegrateAlways
 	content, appendix := ownedFixture(t)
 	host.body = content.Body
 	host.onRead = func(h *mutationComparisonHost) {

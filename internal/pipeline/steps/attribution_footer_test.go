@@ -115,7 +115,7 @@ func TestAttributionGitFooterProtectedReplay(t *testing.T) {
 	f.headSHA = amendReplayMessage(t, f.dir, message)
 	side := mutatingReplayHooks(t, f.dir)
 	c := f.context(t, &mockAgent{}, "rebase")
-	if err := rebaseWithAgent(c.Ctx, c, "origin/main"); err != nil {
+	if err := rebaseWithAgent(c.Ctx, c, "origin/main", false); err != nil {
 		t.Fatal(err)
 	}
 	if got := storedReplayMessage(t, f.dir, "HEAD"); !bytes.Equal(got, message) {

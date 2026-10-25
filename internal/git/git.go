@@ -3,6 +3,7 @@ package git
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -1163,6 +1164,55 @@ func ExitCode(err error) (int, bool) {
 		return 0, false
 	}
 	return exitErr.ExitCode(), true
+}
+
+// MergesCleanly reports whether a three-way merge of head into base completes
+// without a conflict. It runs `git merge-tree --write-tree`, which touches no
+// ref, index, or worktree: exit 0 is a clean merge. Exit 1 is a conflict only
+// when Git still wrote the merged tree, whose OID leads stdout - Git also exits
+// 1 for an object it cannot merge, and prints nothing then. Any other failure
+// is an error, never a verdict, so a caller that cannot run the merge never
+// mistakes that for either answer (issue #237).
+func MergesCleanly(ctx context.Context, dir, base, head string) (bool, error) {
+	out, err := RunAllowingFailure(ctx, dir, "merge-tree", "--write-tree", "--no-messages", base, head)
+	if err == nil {
+		return true, nil
+	}
+	if code, ok := ExitCode(err); ok && code == 1 {
+		tree, _, _ := strings.Cut(out, "\n")
+		if len(tree) == 40 || len(tree) == 64 {
+			if _, hexErr := hex.DecodeString(tree); hexErr == nil {
+				return false, nil
+			}
+		}
+	}
+	return false, fmt.Errorf("merge-tree %s %s: %w", base, head, err)
+}
+
+// TargetAdvancedCleanly reports whether liveTarget is a pure advance of
+// recordedTarget for head: a strict fast-forward that leaves head's merge base
+// at recordedMergeBase, so the change head proposes is byte-for-byte the one
+// recorded against recordedTarget, and that head still merges cleanly into.
+// Equal targets are not an advance and report false; every object must be
+// present locally (issue #237).
+func TargetAdvancedCleanly(ctx context.Context, dir, recordedTarget, liveTarget, head, recordedMergeBase string) (bool, error) {
+	if recordedTarget == "" || liveTarget == "" || head == "" || recordedMergeBase == "" || recordedTarget == liveTarget {
+		return false, nil
+	}
+	if _, err := Run(ctx, dir, "merge-base", "--is-ancestor", recordedTarget, liveTarget); err != nil {
+		if code, ok := ExitCode(err); ok && code == 1 {
+			return false, nil
+		}
+		return false, fmt.Errorf("check target fast-forward %s..%s: %w", recordedTarget, liveTarget, err)
+	}
+	mergeBase, err := Run(ctx, dir, "merge-base", liveTarget, head)
+	if err != nil {
+		return false, fmt.Errorf("merge base of %s and %s: %w", liveTarget, head, err)
+	}
+	if mergeBase != recordedMergeBase {
+		return false, nil
+	}
+	return MergesCleanly(ctx, dir, liveTarget, head)
 }
 
 func DirectRefTarget(ctx context.Context, dir, ref string) (string, bool, error) {

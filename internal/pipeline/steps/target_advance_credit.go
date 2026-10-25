@@ -193,16 +193,26 @@ func reusableRewindReview(c *pipeline.StepContext) (*pipeline.StepOutcome, error
 	if _, err := git.Run(c.Ctx, c.WorkDir, "merge-base", "--is-ancestor", h.Comparison.TargetSHA, current.TargetSHA); err != nil {
 		return nil, nil
 	}
-	tree, err := git.Run(c.Ctx, c.WorkDir, "merge-tree", "--write-tree", current.TargetSHA, h.Comparison.LocalHeadSHA)
-	if err != nil {
-		return nil, nil
-	} // Conflicts never carry credit.
-	headTree, err := git.Run(c.Ctx, c.WorkDir, "rev-parse", current.LocalHeadSHA+"^{tree}")
-	if err != nil {
-		return nil, err
-	}
-	if tree != headTree {
-		return nil, nil
+	if current.LocalHeadSHA == h.Comparison.LocalHeadSHA {
+		// Rebase kept a head that merges cleanly instead of rewriting it
+		// (#237): the review covered this exact commit and an identical diff,
+		// so a clean merge into the new target is the whole proof.
+		clean, err := git.MergesCleanly(c.Ctx, c.WorkDir, current.TargetSHA, current.LocalHeadSHA)
+		if err != nil || !clean {
+			return nil, nil
+		}
+	} else {
+		tree, err := git.Run(c.Ctx, c.WorkDir, "merge-tree", "--write-tree", current.TargetSHA, h.Comparison.LocalHeadSHA)
+		if err != nil {
+			return nil, nil
+		} // Conflicts never carry credit.
+		headTree, err := git.Run(c.Ctx, c.WorkDir, "rev-parse", current.LocalHeadSHA+"^{tree}")
+		if err != nil {
+			return nil, err
+		}
+		if tree != headTree {
+			return nil, nil
+		}
 	}
 	if boundary != nil {
 		findings, err := types.ParseFindingsJSON(boundary.Findings)

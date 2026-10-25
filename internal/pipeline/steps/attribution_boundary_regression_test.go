@@ -156,11 +156,11 @@ func TestAttributionBoundaryAutomaticMerges(t *testing.T) {
 			attributionAppendingHook(t, f.dir)
 			sctx := f.context(t, &mockAgent{}, "merge")
 			if path == "try" {
-				if _, err := tryMerge(sctx.Ctx, sctx, "origin/main"); err != nil {
+				if _, err := tryMerge(sctx.Ctx, sctx, "origin/main", false); err != nil {
 					t.Fatal(err)
 				}
 			} else {
-				if err := mergeWithAgent(sctx.Ctx, sctx, "origin/main"); err != nil {
+				if err := mergeWithAgent(sctx.Ctx, sctx, "origin/main", false); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -228,7 +228,7 @@ func TestAttributionBoundarySubmittedRebaseReplay(t *testing.T) {
 	}}
 	sctx := f.context(t, ag, "rebase")
 	sctx.Run.SubmittedHeadSHA = &f.headSHA
-	if err := rebaseWithAgent(sctx.Ctx, sctx, "origin/main"); err != nil {
+	if err := rebaseWithAgent(sctx.Ctx, sctx, "origin/main", false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := updateHeadSHA(sctx.Ctx, sctx, "main"); err != nil {

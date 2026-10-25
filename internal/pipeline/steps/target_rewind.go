@@ -299,6 +299,11 @@ func detectTargetAdvanceAtPublication(c *pipeline.StepContext, step types.StepNa
 	if candidate.TargetSHA == previous.TargetSHA {
 		return false, nil
 	}
+	// A pure advance is not a reason to rewind (#237): the attestation holds
+	// it against the receipt, and only a conflict or a changed diff rewinds.
+	if _, pure, holdErr := holdReceiptTargetAdvance(c, previous, candidate); holdErr != nil || pure {
+		return false, holdErr
+	}
 	if candidate.LocalHeadSHA != previous.LocalHeadSHA {
 		previous, err = attributeTargetAdvanceHead(c, previous, candidate)
 		if err != nil {
@@ -403,9 +408,23 @@ func checkedRewindTargets(c *pipeline.StepContext, targets []string) (checked []
 	return checked, cleanup, nil
 }
 
-func verifyRewindIntegration(c *pipeline.StepContext, target string) error {
-	if _, err := git.Run(c.Ctx, c.WorkDir, "merge-base", "--is-ancestor", target, "HEAD"); err != nil {
-		return fmt.Errorf("pending rewind did not integrate checked commit %s: %w", target, err)
+// verifyRewindIntegration proves a pending rewind integrated a checked commit.
+// The source branch must be contained. The PR base (base) may instead be
+// proven by a clean three-way merge of the resulting head into it, because
+// Rebase keeps a head that merges cleanly rather than rewriting it (#237).
+func verifyRewindIntegration(c *pipeline.StepContext, target string, base bool) error {
+	_, err := git.Run(c.Ctx, c.WorkDir, "merge-base", "--is-ancestor", target, "HEAD")
+	if err == nil {
+		return nil
 	}
-	return nil
+	if base && keepsCleanHeads(c) {
+		clean, cleanErr := git.MergesCleanly(c.Ctx, c.WorkDir, target, "HEAD")
+		if cleanErr != nil {
+			return fmt.Errorf("pending rewind cannot prove checked commit %s: %w", target, cleanErr)
+		}
+		if clean {
+			return nil
+		}
+	}
+	return fmt.Errorf("pending rewind did not integrate checked commit %s: %w", target, err)
 }

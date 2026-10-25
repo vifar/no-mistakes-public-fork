@@ -337,6 +337,8 @@ The CI step deliberately keeps watching the PR after checks pass, so
 blocking on the human merge. Never poll or re-run waiting for the merge yourself.
 Never treat "no CI checks reported" alone as green.
 
+A target that only moved is not a changed comparison under the default `rebase.integrate: on-conflict`. If it fast-forwarded, left the head's merge base where it was, and the head still merges cleanly into it, the run keeps its comparison, Review, Test and statuses at every step, published or strict, and nothing restarts. Rebase never rewrites a head that merges cleanly. Only a conflict, a moved merge base, or a changed head reaches the rules below.
+
 A published qualified head and original comparison are retained only when live protection permits being behind and the forge confirms mergeability. The following stale-comparison fallback applies otherwise.
 
 For ordinary runs, when the live target commit advances with green checks and no merge conflict, CI clears readiness and keeps monitoring, withholding checks-passed.

@@ -60,20 +60,20 @@ func TestIntegrationUsesPinnedTargetWhenRefAdvances(t *testing.T) {
 				switch path {
 				case "rebase":
 					var conflicts []string
-					conflicts, err = tryRebase(c.Ctx, c, "origin/main")
+					conflicts, err = tryRebase(c.Ctx, c, "origin/main", false)
 					if len(conflicts) > 0 {
 						t.Fatalf("unexpected conflicts: %v", conflicts)
 					}
 				case "rebase-agent":
-					err = rebaseWithAgent(c.Ctx, c, "origin/main")
+					err = rebaseWithAgent(c.Ctx, c, "origin/main", false)
 				case "merge":
 					var conflicts []string
-					conflicts, err = tryMerge(c.Ctx, c, "origin/main")
+					conflicts, err = tryMerge(c.Ctx, c, "origin/main", false)
 					if len(conflicts) > 0 {
 						t.Fatalf("unexpected conflicts: %v", conflicts)
 					}
 				case "merge-agent":
-					err = mergeWithAgent(c.Ctx, c, "origin/main")
+					err = mergeWithAgent(c.Ctx, c, "origin/main", false)
 				}
 				if err != nil {
 					t.Fatalf("integration against moving ref: %v", err)
@@ -130,7 +130,7 @@ func TestIntegrationUsesPinnedTargetWhenRefAdvances(t *testing.T) {
 func TestPinnedIntegrationMissingTargetKeepsRewindGuard(t *testing.T) {
 	c, selected := rewindFixture(t)
 	before := gitCmd(t, c.WorkDir, "rev-parse", "HEAD")
-	skip, target, err := shouldSkipRebase(c.Ctx, c, "origin/missing")
+	skip, target, err := shouldSkipRebase(c.Ctx, c, "origin/missing", false)
 	if err != nil || !skip || target != "" {
 		t.Fatalf("ordinary missing target = %v, %q, %v", skip, target, err)
 	}
@@ -138,7 +138,7 @@ func TestPinnedIntegrationMissingTargetKeepsRewindGuard(t *testing.T) {
 	if _, err := guardPRContextWithSelection(c, types.StepTest, selected, false); err != nil {
 		t.Fatal(err)
 	}
-	skip, target, err = shouldSkipRebase(c.Ctx, c, "origin/missing")
+	skip, target, err = shouldSkipRebase(c.Ctx, c, "origin/missing", false)
 	if err == nil || skip || target != "" || !strings.Contains(err.Error(), "resolve checked rewind target") {
 		t.Fatalf("checked missing target = %v, %q, %v", skip, target, err)
 	}

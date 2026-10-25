@@ -265,13 +265,16 @@ func TestExportRefusesRacesOverridesSkipsAndActionableFindings(t *testing.T) {
 	}
 }
 
-func TestExportFullRefusesUnintegratedCurrentTarget(t *testing.T) {
+// exportAgainstAdvancedTarget advances main by writing file, reviews the
+// feature head against that unintegrated target, and exports the receipt.
+func exportAgainstAdvancedTarget(t *testing.T, file string) error {
+	t.Helper()
 	f := newExportFixture(t)
 	receiptGit(t, f.dir, "switch", "main")
-	if err := os.WriteFile(filepath.Join(f.dir, "target-only"), []byte("advance"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(f.dir, file), []byte("advance\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	receiptGit(t, f.dir, "add", "target-only")
+	receiptGit(t, f.dir, "add", file)
 	receiptGit(t, f.dir, "commit", "-m", "advance target")
 	target := receiptGit(t, f.dir, "rev-parse", "HEAD")
 	receiptGit(t, f.dir, "push", f.repo.UpstreamURL, "main")
@@ -289,8 +292,21 @@ func TestExportFullRefusesUnintegratedCurrentTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.forge.facts.TargetSHA = target
-	if _, err := Export(context.Background(), f.database, f.repo, f.run.ID, "review", f.forge); err == nil {
-		t.Fatal("full proof admitted target absent from reviewed head")
+	_, err = Export(context.Background(), f.database, f.repo, f.run.ID, "review", f.forge)
+	return err
+}
+
+// Full shipping integrates its target when the head merges into it, not only
+// when the head contains it (#237): a clean head is shipped as it is.
+func TestExportFullAcceptsCleanUnintegratedTarget(t *testing.T) {
+	if err := exportAgainstAdvancedTarget(t, "target-only"); err != nil {
+		t.Fatalf("full proof refused a head that merges cleanly into its target: %v", err)
+	}
+}
+
+func TestExportFullRefusesConflictingCurrentTarget(t *testing.T) {
+	if err := exportAgainstAdvancedTarget(t, "source.txt"); err == nil {
+		t.Fatal("full proof admitted a target the reviewed head conflicts with")
 	}
 }
 

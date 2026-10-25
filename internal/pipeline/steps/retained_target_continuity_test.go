@@ -14,6 +14,9 @@ func retainedTargetFixture(t *testing.T) (*pipeline.StepContext, pipeline.PRTarg
 	t.Helper()
 	dir, base, head := setupGitRepo(t)
 	c := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
+	// Exercises the integrate-every-move comparison machinery; under the
+	// default a clean target advance is held instead (#237).
+	c.Config.Rebase.Integrate = config.RebaseIntegrateAlways
 	selection := pipeline.PRTargetSelection{PRURL: "https://github.com/test/repo/pull/42", SourceRepo: "test/repo", SourceBranch: "feature", ForgeHeadSHA: head, TargetBranch: "main"}
 	if _, err := guardPRContextWithSelection(c, types.StepPR, selection, false); err != nil {
 		t.Fatal(err)
