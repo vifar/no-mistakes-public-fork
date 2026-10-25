@@ -657,8 +657,8 @@ func (s *StepResult) StrictApprovalRefusal(reason string) string {
 // only actionable findings are unavailable tools. Approval would ship a change
 // no formatter or linter checked, and no code fix can install a tool, so the
 // way forward is to make the tool available and answer fix: the Lint step
-// then re-checks the environment without an agent pass and either clears the
-// finding or parks again (see steps.lintEnvironmentRecheck).
+// then routes the environment recheck or agent fallback through
+// steps.lintEnvironmentRecheck.
 const StrictLintEnvironmentRefusal = "strict shipping cannot approve an unavailable lint tool; make it available in the run worktree (for example install the repository's dependencies), then respond with `axi respond --action fix` to re-check the environment"
 
 func onlyLintEnvironmentFindings(findings types.Findings) bool {

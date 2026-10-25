@@ -92,7 +92,7 @@ const (
 // FindingCategoryLintEnvironment marks a Lint finding about the run's
 // environment, not the code: a lint or format tool that is unavailable in the
 // run worktree. No code change can resolve it, so strict shipping points it at
-// a fix round, which re-checks the environment without an agent pass.
+// a fix round; steps.lintEnvironmentRecheck owns rechecking and agent fallback.
 const FindingCategoryLintEnvironment = "lint-environment"
 
 // Finding category constants for the CI step's check findings. The CI step

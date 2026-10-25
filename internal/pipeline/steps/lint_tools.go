@@ -494,12 +494,12 @@ func tailText(text string, limit int) string {
 }
 
 // lintEnvironmentRecheck handles a fix round whose every selected finding is
-// an environment finding. Code changes cannot fix an unavailable tool, so no
-// agent runs: the step re-checks each finding's tool in the package directory
+// an environment finding. It re-checks each known tool in the package directory
 // the finding names. The outcome is nil (run the normal lint pass) once one
-// of them is available there, or the same findings again so the gate
-// re-parks without failing the run. Another package having the tool does not
-// count: the package that lacked it has gained nothing.
+// is available there, or when a tool or directory needs agent resolution.
+// Otherwise it returns the same findings so the gate re-parks without an
+// agent or run failure. Another package having the tool does not count:
+// the package that lacked it has gained nothing.
 func lintEnvironmentRecheck(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	if !sctx.Fixing || sctx.PreviousFindings == "" {
 		return nil, nil
