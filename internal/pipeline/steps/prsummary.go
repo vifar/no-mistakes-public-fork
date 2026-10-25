@@ -1728,7 +1728,8 @@ func renderCoAuthorAsLabelledField(s string) string {
 }
 
 // publishedCoAuthorKey matches the co-author key wherever it sits in a line.
-var publishedCoAuthorKey = regexp.MustCompile(`(?i)Co-Authored-By((?:[*_~]|</code>|&lt;/code&gt;)*[ \t]*:[ \t]*)`)
+var publishedCoAuthorKey = regexp.MustCompile(`(?i)Co-Authored-By`)
+var publishedCoAuthorSeparator = regexp.MustCompile(`(?i)^(?:[*_~]|</code>)*[ \t]*:[ \t]*`)
 var publishedInlineOpening = regexp.MustCompile(`(?:[*_~]|<code>)+$`)
 var publishedHTMLEntity = regexp.MustCompile(`&(?:#[xX][0-9a-fA-F]+;?|#[0-9]+;?|[A-Za-z][A-Za-z0-9]*;?)`)
 
@@ -1741,9 +1742,19 @@ func renderInlineCoAuthorKeys(s string, notice bool, configuredTrailers ...strin
 	lines := strings.Split(s, "\n")
 	for i, line := range lines {
 		spans := inlineCodeSpans(line)
-		matches := publishedCoAuthorKey.FindAllStringSubmatchIndex(line, -1)
+		matches := publishedCoAuthorKey.FindAllStringIndex(line, -1)
 		for k := len(matches) - 1; k >= 0; k-- {
-			start, end, sep := matches[k][0], matches[k][1], line[matches[k][2]:matches[k][3]]
+			start, keyEnd := matches[k][0], matches[k][1]
+			separator := publishedCoAuthorSeparator.FindString(html.UnescapeString(line[keyEnd:]))
+			if separator == "" {
+				continue
+			}
+			width := rawHTMLPrefixEnd(line[keyEnd:], len(separator))
+			if width < 0 {
+				continue
+			}
+			end := keyEnd + width
+			sep := line[keyEnd:end]
 			inCode := false
 			for _, span := range spans {
 				if start >= span[0] && start < span[1] {

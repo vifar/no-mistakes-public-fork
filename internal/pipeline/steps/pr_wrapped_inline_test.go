@@ -112,36 +112,48 @@ func TestPRPairedFormattedHumanAndAIInlinePublication(t *testing.T) {
 				{"Codex", "ai@example.com", true},
 				{"Example, Inc. Bot", "opaque@example.com", true},
 			} {
-				for _, escaped := range []bool{false, true} {
-					claim := layout.open + layout.key + " " + layout.value + identity.name + " <" + identity.email + ">" + layout.close
-					if escaped {
-						claim = html.EscapeString(claim)
-					}
-					raw := "Recorded risk " + claim + suffix
-					for _, notice := range []bool{false, true} {
-						want := raw
-						if identity.ai {
-							replacement := ""
-							if notice {
-								replacement = prAIAttributionNotice
+				for _, encode := range []func(string) string{
+					func(value string) string { return value },
+					html.EscapeString,
+					func(value string) string {
+						return strings.NewReplacer("&lt;code&gt;", "&#60;code&#62;", "&lt;/code&gt;", "&#60;/code&#62;").Replace(html.EscapeString(value))
+					},
+					func(value string) string {
+						return strings.NewReplacer("&lt;code&gt;", "&#x3c;code&#x3e;", "&lt;/code&gt;", "&#x3c;/code&#x3e;").Replace(html.EscapeString(value))
+					},
+					func(value string) string {
+						return strings.NewReplacer("&lt;code&gt;", "&#X003C;code&#00062;", "&lt;/code&gt;", "&lt;/code&#x003E;").Replace(html.EscapeString(value))
+					},
+				} {
+					for _, prefix := range []string{"Recorded risk ", "Recorded "} {
+						claim := layout.open + layout.key + " " + layout.value + identity.name + " <" + identity.email + ">" + layout.close
+						claim = encode(claim)
+						raw := prefix + claim + suffix
+						for _, notice := range []bool{false, true} {
+							want := raw
+							if identity.ai {
+								replacement := ""
+								if notice {
+									replacement = prAIAttributionNotice
+								}
+								want = prefix + encode(layout.open) + replacement + encode(layout.close) + suffix
+							} else if layout.open == "" && layout.value == "" {
+								want = strings.Replace(raw, "Co-Authored-By:", "co-author (quoted):", 1)
 							}
-							want = "Recorded risk " + layout.open + replacement + layout.close + suffix
-							if escaped {
-								want = "Recorded risk " + html.EscapeString(layout.open) + replacement + html.EscapeString(layout.close) + suffix
-							}
-						} else if layout.open == "" && layout.value == "" {
-							want = strings.Replace(raw, "Co-Authored-By:", "co-author (quoted):", 1)
-						}
-						for _, recorded := range []bool{false, true} {
-							input, expected := raw, want
-							if recorded {
-								const tail = `, "escape":"A\u0042\/C", "number":1.200e+3}`
-								input = `{"summary":` + strconv.Quote(raw) + tail
-								expected = `{"summary":` + strconv.Quote(want) + tail
-							}
-							got := prDisplayTextMode(input, notice, "Co-Authored-By: Example, Inc. Bot <opaque@example.com>")
-							if got != expected {
-								t.Errorf("notice=%t recorded=%t input=%q: got %q, want %q", notice, recorded, input, got, expected)
+							for _, recorded := range []bool{false, true} {
+								input, expected := raw, want
+								if recorded {
+									const tail = `, "escape":"A\u0042\/C", "number":1.200e+3}`
+									input = `{"summary":` + strconv.Quote(raw) + tail
+									expected = `{"summary":` + strconv.Quote(want) + tail
+								}
+								got := prDisplayTextMode(input, notice, "Co-Authored-By: Example, Inc. Bot <opaque@example.com>")
+								if recorded && !json.Valid([]byte(got)) {
+									t.Errorf("published invalid JSON: %q", got)
+								}
+								if got != expected {
+									t.Errorf("notice=%t recorded=%t input=%q: got %q, want %q", notice, recorded, input, got, expected)
+								}
 							}
 						}
 					}
