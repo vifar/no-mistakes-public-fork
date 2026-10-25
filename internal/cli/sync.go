@@ -270,7 +270,7 @@ func runHumanRecover(cmd *cobra.Command, keepLocal, yes bool) error {
 			fmt.Fprintln(cmd.OutOrStdout(), "  Recovery returns custody of this branch from its terminal run. The only")
 			if state.Recovery != nil && state.Recovery.KeepLocal {
 				fmt.Fprintln(cmd.OutOrStdout(), "  possible Git change is moving the local gate branch to the exact required")
-				fmt.Fprintln(cmd.OutOrStdout(), "  head; the worktree and verified divergent archive are never touched.")
+				fmt.Fprintln(cmd.OutOrStdout(), "  head; the worktree and verified preserved history are never touched.")
 			} else {
 				fmt.Fprintln(cmd.OutOrStdout(), "  possible changes are anchoring available preserved pipeline commits, discarding")
 				fmt.Fprintln(cmd.OutOrStdout(), "  genuinely missing ones, and moving the local gate branch to your current head;")
@@ -382,7 +382,11 @@ func printHumanSyncState(cmd *cobra.Command, state branchsync.State) {
 		fmt.Fprintf(w, "  preserved: %s (run %s, %s)\n", state.Pipeline.CurrentHead, state.Pipeline.RunID, state.Pipeline.Status)
 	}
 	if state.Recovery != nil && state.Recovery.ArchiveRef != "" {
-		fmt.Fprintf(w, "  archive:  %s -> %s (%s)\n", state.Recovery.ArchiveRef, state.Recovery.PreservedHead, state.Recovery.Proof)
+		if state.Recovery.Source == "preserved_rebase" {
+			fmt.Fprintf(w, "  recovery ref: %s -> %s (%s)\n", state.Recovery.ArchiveRef, state.Recovery.PreservedHead, state.Recovery.Proof)
+		} else {
+			fmt.Fprintf(w, "  archive:  %s -> %s (%s)\n", state.Recovery.ArchiveRef, state.Recovery.PreservedHead, state.Recovery.Proof)
+		}
 		fmt.Fprintf(w, "  required: %s\n", state.Recovery.RequiredHead)
 	}
 	if state.Target.Ref != "" {
@@ -398,7 +402,7 @@ func humanSyncSummary(state branchsync.State) string {
 	case branchsync.StatePipelineOwned:
 		if state.Safety == "blocked_pipeline_owned_recoverable" {
 			if state.Recovery != nil && state.Recovery.KeepLocal {
-				return "later pipeline work is preserved by a verified archive; recover custody at the exact required head with `no-mistakes sync --recover --keep-local`"
+				return "pipeline work remains preserved; recover custody at the exact required head using the reported next action"
 			}
 			return "run ended without publishing its pipeline commits; recover custody with `no-mistakes sync --recover`. `no-mistakes rerun` resumes validating the selected preserved head, but refuses a known clean caller HEAD mismatch. If heads differ, inspect `no-mistakes axi status` and follow its exact `branch_sync.next_action.command` for custody or synchronization, then submit intended local commits with a fresh `no-mistakes axi run` once custody permits"
 		}

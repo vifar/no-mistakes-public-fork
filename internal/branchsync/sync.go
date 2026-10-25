@@ -373,6 +373,9 @@ func (s *Service) refresh(ctx context.Context, persistPRState bool) State {
 		return state
 	}
 	if !ok || !refreshable(state) {
+		if state.Recovery != nil && state.Recovery.Source == "preserved_rebase" {
+			return s.verifyKeepLocalPushTarget(ctx, state)
+		}
 		return state
 	}
 	freshRun, runErr := s.DB.GetRun(run.ID)
@@ -817,6 +820,12 @@ func (s *Service) RecoverAtHead(ctx context.Context, keepLocal bool, authoritati
 	if state.Local.Head != authoritativeHead {
 		return blockedPlan(state, StateAmbiguousContext, "blocked_recover_authority_mismatch", fmt.Sprintf("the registered worktree is at %s, not the authoritative recovery head %s; no files or refs were changed", state.Local.Head, authoritativeHead))
 	}
+	if keepLocal && state.Safety == "blocked_recover_manual_reconciliation" {
+		return state
+	}
+	if keepLocal && !state.Local.Clean {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_dirty", "authoritative-head recovery requires a clean worktree; no files or refs were changed")
+	}
 	return s.Recover(ctx, keepLocal)
 }
 
@@ -965,6 +974,12 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	// but never authorizes taking that head. Its only recovery is the existing
 	// keep-local path at the exact required head recorded in the proof.
 	source := s.recoverySourceAvailable(ctx, &state, run)
+	if keepLocal && source.evidence != nil && source.evidence.Source == "preserved_rebase" {
+		checked := s.verifyKeepLocalPushTarget(ctx, state)
+		if checked.Safety != state.Safety {
+			return checked
+		}
+	}
 	if source.archiveClaimed {
 		if !source.available {
 			return source.apply(state)
@@ -2502,7 +2517,9 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 		}
 		state.Safety = "blocked_pipeline_owned_recoverable"
 		state.Recovery = source.evidence
-		if source.archive != nil {
+		if source.evidence != nil && source.evidence.Source == "preserved_rebase" {
+			state.Error = fmt.Sprintf("the run finished %s with pipeline-only commits reachable from preserved head %s but absent from local head %s; keep-local recovery leaves those commits at %s in the worktree and gate, keeps the branch at %s, and returns custody; after recovery, inspect the preserved-only commits with `git log %s --not %s`; plain --recover still refuses unproven divergence", run.Status, run.HeadSHA, state.Local.Head, source.evidence.ArchiveRef, state.Local.Head, source.evidence.ArchiveRef, state.Local.Head)
+		} else if source.archive != nil {
 			state.Error = fmt.Sprintf("the run finished %s with divergent later work preserved at verified archive %s; recover custody at exact required head %s before any local follow-up commit", run.Status, source.archive.ArchiveRef, source.archive.RequiredHeadSHA)
 		} else {
 			state.Error = "the run finished " + string(run.Status) + " with unpublished pipeline commits preserved in the local gate; recover custody before any local follow-up commit"
@@ -2695,10 +2712,45 @@ func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run
 	if archiveProof.available {
 		return archiveProof
 	}
+	// A pipeline-only rebase need not contain the operator's later work, and
+	// that clean local head need not exist in the gate. Offer the existing
+	// explicit keep-local path only with an exact durable gate anchor and a
+	// last-pushed ancestor of the kept head. Discovery never imports objects.
+	if gateAvailable && state.Local.Clean && run.TerminalHeadVerifiedAt != nil &&
+		run.LastPushedSHA != nil && isAncestor(ctx, s.workDir(), *run.LastPushedSHA, local) &&
+		ptr(run.PushTargetKind) == targetKind(s.Repo) &&
+		ptr(run.PushTargetFingerprint) == TargetFingerprint(s.Repo.PushURL()) &&
+		ptr(run.PushRef) == "refs/heads/"+state.Local.Branch {
+		anchor, exists, err := git.DirectRefTarget(ctx, gateDir, localAnchor)
+		if err == nil && exists && anchor == preserved && objectExists(ctx, gateDir, preserved) {
+			return recoverySourceProof{
+				available: true,
+				action:    NextAction{Code: "recover_custody", Command: "no-mistakes axi sync --recover --keep-local --authoritative-head " + local},
+				evidence: &RecoveryEvidence{
+					Source: "preserved_rebase", RepositoryID: s.Repo.ID, RunID: run.ID,
+					Branch: state.Local.Branch, RequiredHead: local, PreservedHead: preserved,
+					ArchiveRef: localAnchor, KeepLocal: true, Proof: "verified",
+				},
+			}
+		}
+	}
 	return unavailableRecoverySource(
 		"blocked_recover_manual_reconciliation",
 		"the run finished "+string(run.Status)+" but its preserved recovery evidence cannot be used safely; inspect and reconcile the recorded and live heads manually",
 	)
+}
+
+// verifyKeepLocalPushTarget checks the published binding without importing or
+// rewriting the remote. Passive status retains its cached, read-only semantics.
+func (s *Service) verifyKeepLocalPushTarget(ctx context.Context, state State) State {
+	remoteCtx, cancel := context.WithTimeout(ctx, s.remoteTimeout())
+	defer cancel()
+	live, err := s.runLsRemote(remoteCtx, s.workDir(), s.Repo.PushURL(), state.Target.Ref)
+	if err != nil || live == "" || live != state.Pipeline.PushedHead {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_remote_changed", "the live push target cannot be verified at the recorded last-pushed head; no files or refs were changed")
+	}
+	state.Remote = RemoteState{ObservedHead: live, Freshness: "live", ObservedAt: time.Now().Unix()}
+	return state
 }
 
 func localRecoveryEligible(ctx context.Context, wd string, state *State, run *db.Run) bool {
