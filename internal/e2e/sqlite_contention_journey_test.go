@@ -25,14 +25,16 @@ func TestSQLiteContentionOnRealDaemon(t *testing.T) {
 			cleanSQLiteJourneyScenario(t, h)
 			branch, head, wt := statusBranch(t, h, true)
 			// The first state query precedes the scope write. The second is the
-			// monitor's observation, immediately before UpdateRunPRState.
+			// monitor's observation, immediately before UpdateRunPRState. Since
+			// #225 a CI poll reads the PR's state from one combined pr view
+			// (scm.WithPRViewSnapshot), so that read matches too.
 			gh := filepath.Join(h.BinDir, "gh")
 			delegate := filepath.Join(h.BinDir, "lock-gh-delegate")
 			if err := os.Rename(gh, delegate); err != nil {
 				t.Fatal(err)
 			}
 			first, ready, resume := gh+".first", gh+".ready", gh+".resume"
-			script := "#!/bin/sh\ncase \"$*\" in\n*'--json state --jq .state'*)\n" +
+			script := "#!/bin/sh\ncase \"$*\" in\n*'--json state --jq .state'*|*'--json baseRefName,headRefOid,mergeable,mergeStateStatus,state'*)\n" +
 				"if [ ! -f " + shellQuote(first) + " ]; then : > " + shellQuote(first) + "; else\n" +
 				": > " + shellQuote(ready) + "\nn=0\nwhile [ ! -f " + shellQuote(resume) + " ]; do\n" +
 				"n=$((n+1)); [ \"$n\" -lt 600 ] || exit 91; sleep 0.1\ndone\nfi;;\nesac\n" +
