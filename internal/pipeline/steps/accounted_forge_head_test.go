@@ -224,8 +224,19 @@ func TestAccountedForgeHeadPushCorrection(t *testing.T) {
 				}
 				return
 			}
-			if err != nil || outcome == nil || outcome.RestartFrom != types.StepReview {
-				t.Fatalf("correction failed to reach normal re-review: %+v %v", outcome, err)
+			if err != nil || outcome == nil || outcome.NeedsApproval || outcome.RestartFrom != "" {
+				t.Fatalf("accounted correction failed the existing local-target push path: %+v %v", outcome, err)
+			}
+			// This fixture's push target is local. Preserve its existing policy
+			// rather than importing #101's separate GitHub re-review behavior.
+			published := gitCmd(t, c.WorkDir, "rev-parse", "HEAD")
+			target := resolvePushURL(c)
+			if got := gitCmd(t, target, "rev-parse", "refs/heads/feature"); got != published {
+				t.Fatalf("published head=%s want=%s", got, published)
+			}
+			run, readErr := c.DB.GetRun(c.Run.ID)
+			if readErr != nil || run.LastPushedSHA == nil || *run.LastPushedSHA != published {
+				t.Fatalf("publication binding=%+v err=%v", run, readErr)
 			}
 		})
 	}
