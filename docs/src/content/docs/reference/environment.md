@@ -38,6 +38,17 @@ Override how long a CLI client waits for an existing daemon socket to accept a c
 
 Takes precedence over `daemon_connect_timeout` in `config.yaml`. An empty, unparsable, or non-positive value is ignored and the config value (or its default) is used instead. The config value is read from the root whose socket is being dialed, not from the root `NM_HOME` names, so a push handled by the root that owns the gate also waits for the timeout that root configured.
 
+## `NM_TEST_CI_UNCHANGED_POLL_MAX`
+
+Test-only override of the [CI monitor's unchanged-poll backoff cap](/no-mistakes/reference/pipeline-steps/#ci), used by the e2e harness. Leave unset in production.
+
+|         |                       |
+| ------- | --------------------- |
+| Type    | `string` (Go duration) |
+| Default | `5m`                  |
+
+An unset, unparsable, or non-positive value keeps the default. The cap never shortens the normal polling interval. The harness's `DisableCIPollBackoff` helper sets it to `30s` before starting the daemon, disabling backoff while preserving the elapsed-time polling schedule.
+
 ## `NO_MISTAKES_OWNER`
 
 Optional session/thread ID or person responsible for driving a new run's approval gates. `axi run` and `rerun` read it in the launching CLI and send it to the daemon; `axi abort` also reads it to identify the cancellation caller. The daemon does not read its own environment to guess a caller. `--owner` takes precedence, including an explicitly empty value. See [launch owner](/no-mistakes/reference/cli/#launch-owner) for ownership semantics, global [`intent.require_owner`](/no-mistakes/reference/global-config/#intent) for ownerless-launch policy, and [`axi abort`](/no-mistakes/reference/cli/#no-mistakes-axi-abort) for cancellation attribution and fallback.
