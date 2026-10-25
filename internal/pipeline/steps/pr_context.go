@@ -851,18 +851,10 @@ func verifyCurrentPRComparison(sctx *pipeline.StepContext, host scm.Host, select
 	if err != nil {
 		return fmt.Errorf("read merged PR result tree: %w", err)
 	}
-	retainedTarget, err := sctx.DB.GetRetainedPRTarget(sctx.Run.ID, receipt)
-	if err != nil {
-		return err
-	}
 	if mergeTree != actualTree {
-		// A retained target owns its own proof above; the first-parent proof
-		// covers only a target that moved with nothing recorded (#161).
-		proven := false
-		if retainedTarget == "" {
-			if proven, err = mergedOntoAdvancedTarget(sctx, receipt, mergeSHA, actualTree); err != nil {
-				return err
-			}
+		proven, err := mergedOntoAdvancedTarget(sctx, receipt, mergeSHA, actualTree)
+		if err != nil {
+			return err
 		}
 		if !proven {
 			return fmt.Errorf("merged PR tree differs from the reviewed comparison result")
@@ -886,7 +878,14 @@ func mergedOntoAdvancedTarget(sctx *pipeline.StepContext, receipt *db.PRContext,
 	if err != nil || parent == "" {
 		return false, nil
 	}
-	pure, err := git.TargetAdvancedCleanly(sctx.Ctx, sctx.WorkDir, receipt.TargetSHA, parent, receipt.LocalHeadSHA, receipt.MergeBaseSHA)
+	floor, err := sctx.DB.GetRetainedPRTarget(sctx.Run.ID, receipt)
+	if err != nil {
+		return false, err
+	}
+	if floor == "" {
+		floor = receipt.TargetSHA
+	}
+	pure, err := git.TargetAdvancedCleanly(sctx.Ctx, sctx.WorkDir, floor, parent, receipt.LocalHeadSHA, receipt.MergeBaseSHA)
 	if err != nil || !pure {
 		return false, err
 	}

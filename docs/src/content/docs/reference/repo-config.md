@@ -1110,6 +1110,8 @@ rebase:
 
 The same setting decides what a base that moves **during** a run means. Under `on-conflict`, a target that fast-forwards while the head still merges cleanly into it, and leaves the head's merge base where it was, changes nothing the run validated. The pull request's own diff stays byte-for-byte the same. The run keeps its comparison, its Review and Test results, and its published statuses. It does not rewind, restart, or fail. See [Target advances before publication](/no-mistakes/reference/pipeline-steps/#target-advances-before-publication). Under `always`, every target move is a comparison change, as it was before.
 
+The separate explicit opt-in [`ci.rebase_behind: true`](#cirebase_behind) still rebases a green BEHIND PR, regardless of `rebase.integrate`.
+
 The pushed source branch is not the base. Commits already on it are always integrated, so publication never drops them.
 
 ### rebase.strategy
