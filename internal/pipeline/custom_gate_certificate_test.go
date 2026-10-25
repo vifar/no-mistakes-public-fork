@@ -8,6 +8,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -21,7 +22,12 @@ func TestExecutor_CustomGateApprovalDoesNotCertifyUnresolvedErrors(t *testing.T)
 				findings := fmt.Sprintf(`{"findings":[{"id":"budget","severity":%q,"description":"budget condition","action":"ask-user"}]}`, severity)
 				step := newApprovalStep(name, findings)
 				cfg := config.Merge(config.DefaultGlobalConfig(), &config.RepoConfig{})
-				executor := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
+				parks := make(chan types.GateIdentity, 1)
+				executor := NewExecutor(database, p, cfg, nil, []Step{step}, func(event ipc.Event) {
+					if event.Status != nil && *event.Status == string(types.StepStatusAwaitingApproval) && event.Gate != nil {
+						parks <- *event.Gate
+					}
+				})
 				if recovered {
 					if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
 						t.Fatal(err)
@@ -50,25 +56,29 @@ func TestExecutor_CustomGateApprovalDoesNotCertifyUnresolvedErrors(t *testing.T)
 						t.Fatal(err)
 					}
 				}
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
+				ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 				done := make(chan error, 1)
 				go func() {
+					defer close(done)
 					if recovered {
 						done <- executor.Resume(ctx, run, repo, workDir)
 					} else {
 						done <- executor.Execute(ctx, run, repo, workDir)
 					}
 				}()
-				deadline := time.Now().Add(5 * time.Second)
-				for {
-					if err := executor.Respond(name, types.ActionApprove, nil, gateSnapshot(executor)); err == nil {
-						break
+				defer func() {
+					cancel()
+					<-done
+				}()
+				select {
+				case gate := <-parks:
+					if err := executor.Respond(name, types.ActionApprove, nil, &gate); err != nil {
+						t.Fatalf("custom gate did not accept ordinary approval: %v", err)
 					}
-					if time.Now().After(deadline) {
-						t.Fatal("custom gate did not accept ordinary approval")
-					}
-					time.Sleep(10 * time.Millisecond)
+				case err := <-done:
+					t.Fatalf("executor stopped before publishing the custom gate: %v", err)
+				case <-ctx.Done():
+					t.Fatal("custom gate did not park")
 				}
 				select {
 				case err := <-done:

@@ -2,6 +2,7 @@ package citest
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps/internal/stepstest"
 )
@@ -127,6 +129,138 @@ func TestCIStep_ChangingChecksKeepTheNormalCadence(t *testing.T) {
 	for i := range want {
 		if waits[i] != want[i] {
 			t.Fatalf("waits=%v, want %v: one unchanged poll backs off, any change resets it", waits, want)
+		}
+	}
+}
+
+// Issue #226: the backoff is for polls that read a healthy, settled state that
+// did not change. A poll whose read failed, or whose readiness proof failed,
+// is not "nothing changed": backing it off delays noticing the recovery.
+func TestCIStep_UnhealthyPollsKeepTheNormalCadence(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		env       func(t *testing.T, head string) []string
+		configure func(*pipeline.StepContext, *steps.CIStep)
+	}{
+		{name: "mergeability read fails", env: func(t *testing.T, head string) []string {
+			pending := `[{"name":"build","state":"IN_PROGRESS","bucket":"pending"}]`
+			return append(stepstest.FakeCIGHMergeableError(t, "OPEN", pending, "gh: mergeability unavailable"), "FAKE_CLI_PR_HEAD_SHA="+head)
+		}},
+		{name: "readiness comparison fails", env: func(t *testing.T, head string) []string {
+			// Green checks with no bound comparison receipt: every poll's
+			// readiness proof fails while the forge reads stay identical.
+			green := `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`
+			return append(stepstest.FakeCIGH(t, "OPEN", green), "FAKE_CLI_PR_HEAD_SHA="+head)
+		}},
+		{name: "empty rollup waiting for registration", env: func(t *testing.T, head string) []string {
+			return append(stepstest.FakeCIGH(t, "OPEN", `[]`), "FAKE_CLI_PR_HEAD_SHA="+head)
+		}},
+		{name: "empty rollup with missing required check", env: func(t *testing.T, head string) []string {
+			return append(stepstest.FakeCIGH(t, "OPEN", `[]`), "FAKE_CLI_PR_HEAD_SHA="+head)
+		}, configure: func(sctx *pipeline.StepContext, _ *steps.CIStep) {
+			sctx.Config.CI.MustPass = []string{"build"}
+		}},
+		{name: "timeout base tip read fails", env: func(t *testing.T, head string) []string {
+			return append(stepstest.FakeCIGH(t, "OPEN", `[{"name":"build","state":"IN_PROGRESS","bucket":"pending"}]`), "FAKE_CLI_PR_HEAD_SHA="+head)
+		}, configure: func(_ *pipeline.StepContext, step *steps.CIStep) {
+			step.SetBaseBranchTip(func(context.Context) (string, bool) { return "fallback-tip", false })
+		}},
+		{name: "behind base tip read fails", env: func(t *testing.T, head string) []string {
+			return append(stepstest.FakeCIGHMergeable(t, "OPEN", `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`, "MERGEABLE BEHIND"), "FAKE_CLI_PR_HEAD_SHA="+head)
+		}, configure: func(sctx *pipeline.StepContext, step *steps.CIStep) {
+			sctx.Config.CITimeout = -1
+			sctx.Config.CI.RebaseBehind = true
+			step.SetBaseBranchTip(func(context.Context) (string, bool) { return "fallback-tip", false })
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
+			prURL := "https://github.com/test/repo/pull/42"
+			sctx := stepstest.NewTestContext(t, &stepstest.MockAgent{AgentName: "test"}, dir, baseSHA, headSHA, config.Commands{})
+			sctx.Env = tc.env(t, headSHA)
+			sctx.Run.PRURL = &prURL
+			sctx.Config.CITimeout = time.Hour
+			sctx.Config.CIReadinessReceiptTimeout = time.Hour
+
+			now := time.Unix(1700000000, 0)
+			var waits []time.Duration
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			sctx.Ctx = ctx
+			step := (&steps.CIStep{}).SetBaseBranchTip(func(context.Context) (string, bool) { return baseSHA, true }).SetNow(func() time.Time { return now }).
+				SetWaitForNextPoll(func(ctx context.Context, interval time.Duration) error {
+					waits = append(waits, interval)
+					now = now.Add(interval)
+					if len(waits) == 4 {
+						cancel()
+						return ctx.Err()
+					}
+					return nil
+				})
+			if tc.configure != nil {
+				tc.configure(sctx, step)
+			}
+			_, _ = stepstest.ExecuteWithAutoFix(t, step, sctx, 0)
+			if len(waits) != 4 {
+				t.Fatalf("waits=%v, want four polls", waits)
+			}
+			for _, wait := range waits {
+				if wait != 30*time.Second {
+					t.Fatalf("waits=%v, want every unhealthy poll on the normal 30s cadence", waits)
+				}
+			}
+		})
+	}
+}
+
+func TestCIStep_RegistrationWaitCadenceAcrossMergeability(t *testing.T) {
+	for _, mergeability := range []string{"MERGEABLE", "UNKNOWN", "PENDING"} {
+		for _, required := range []bool{false, true} {
+			for _, noCI := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/required=%t/no_ci=%t", mergeability, required, noCI), func(t *testing.T) {
+					t.Parallel()
+					dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
+					sctx := stepstest.NewTestContextWithDBRecords(t, &stepstest.MockAgent{AgentName: "test"}, dir, baseSHA, headSHA, config.Commands{})
+					sctx.Env = stepstest.FakeCIGHMergeable(t, "OPEN", `[]`, mergeability)
+					stepstest.BindCurrentPRComparison(t, sctx, "https://github.com/test/repo/pull/42", "test/repo", "main")
+					sctx.Config.CITimeout = time.Hour
+					sctx.Config.NoCI = noCI
+					if required {
+						sctx.Config.CI.MustPass = []string{"build"}
+					}
+					ctx, cancel := context.WithCancel(context.Background())
+					defer cancel()
+					sctx.Ctx = ctx
+					now := time.Unix(1700000000, 0)
+					var waits []time.Duration
+					step := (&steps.CIStep{}).
+						SetBaseBranchTip(func(context.Context) (string, bool) { return baseSHA, true }).
+						SetNow(func() time.Time { return now }).
+						SetWaitForNextPoll(func(ctx context.Context, interval time.Duration) error {
+							waits = append(waits, interval)
+							now = now.Add(interval)
+							if len(waits) == 4 {
+								cancel()
+								return ctx.Err()
+							}
+							return nil
+						})
+					_, _ = step.Execute(sctx)
+					want := []time.Duration{30 * time.Second, 30 * time.Second, 30 * time.Second, 30 * time.Second}
+					if noCI && !required {
+						want = []time.Duration{30 * time.Second, 60 * time.Second, 120 * time.Second, 240 * time.Second}
+					}
+					if len(waits) != len(want) {
+						t.Fatalf("waits=%v, want %v", waits, want)
+					}
+					for i := range want {
+						if waits[i] != want[i] {
+							t.Fatalf("waits=%v, want %v: registration waits retain normal cadence; trusted no_ci only waives absent checks without explicit requirements", waits, want)
+						}
+					}
+				})
+			}
 		}
 	}
 }

@@ -3,7 +3,9 @@ package steps
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,19 +36,67 @@ func pollInterval(elapsed time.Duration) time.Duration {
 // nothing new. It matches the strict-shipping cadence (ciPollInterval).
 const ciUnchangedPollMax = 5 * time.Minute
 
+// ciUnchangedPollMaxEnv is a TEST-ONLY override of ciUnchangedPollMax for the
+// e2e harness, whose daemon polls on the production schedule: a journey that
+// must observe several live polls within minutes sets it to 30s, which turns
+// the backoff off without changing the elapsed-time schedule. Production never
+// sets it; an unset, unparsable or non-positive value keeps the default.
+const ciUnchangedPollMaxEnv = "NM_TEST_CI_UNCHANGED_POLL_MAX"
+
+func unchangedPollMax() time.Duration {
+	if d, err := time.ParseDuration(os.Getenv(ciUnchangedPollMaxEnv)); err == nil && d > 0 {
+		return d
+	}
+	return ciUnchangedPollMax
+}
+
 // unchangedPollInterval doubles the poll interval for each consecutive poll
-// that observed exactly what the previous one did, up to ciUnchangedPollMax.
+// that observed exactly what the previous one did, up to unchangedPollMax.
 // A PR whose checks run for an hour, or that sits green waiting for a merge,
 // otherwise costs a full set of forge reads every 30-120s and, across many
 // runs on one account, spends GitHub's rate limits. Any change resets it.
 func unchangedPollInterval(interval time.Duration, unchangedPolls int) time.Duration {
-	if interval >= ciUnchangedPollMax {
+	limit := unchangedPollMax()
+	if interval >= limit {
 		return interval
 	}
-	for i := 0; i < unchangedPolls && interval < ciUnchangedPollMax; i++ {
+	for i := 0; i < unchangedPolls && interval < limit; i++ {
 		interval *= 2
 	}
-	return min(interval, ciUnchangedPollMax)
+	return min(interval, limit)
+}
+
+// ciPollObservation is what the backoff compares between polls: the forge
+// reads plus the poll's outcome (monitor status message and readiness bit).
+// An unhealthy or unsettled poll has no observation, so it never counts as
+// unchanged and resets the backoff (issue #226).
+func ciPollObservation(forge string, healthySettled bool, status string, ready bool) string {
+	if forge == "" || !healthySettled {
+		return ""
+	}
+	return forge + " status=" + status + " ready=" + strconv.FormatBool(ready)
+}
+
+// watchCIPollOutcome reports, for as long as the monitor runs, every warning
+// the step logs (any failed read or proof, including those logged inside
+// helpers) and every readiness change, then restores the original hooks.
+func watchCIPollOutcome(sctx *pipeline.StepContext, warned func(), readiness func(bool)) (restore func()) {
+	log, changed := sctx.Log, sctx.CIReadinessChanged
+	if log != nil {
+		sctx.Log = func(line string) {
+			if strings.HasPrefix(line, "warning:") {
+				warned()
+			}
+			log(line)
+		}
+	}
+	sctx.CIReadinessChanged = func(ready, declaredNoCI bool) {
+		readiness(ready)
+		if changed != nil {
+			changed(ready, declaredNoCI)
+		}
+	}
+	return func() { sctx.Log, sctx.CIReadinessChanged = log, changed }
 }
 
 // checksObservation fingerprints the checks a poll read: any check that

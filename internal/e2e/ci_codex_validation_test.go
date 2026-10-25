@@ -156,7 +156,11 @@ func TestCIScopeCodexFreshReceiptJourney(t *testing.T) {
 
 // Exercise more polls than the consecutive read-error threshold. A legitimate
 // start signal waits, without a repair turn or provider-error approval gate.
+//
+// The healthy bot-pending poll is backed off in production (issue #226); the
+// seven polls are counted on the elapsed-time schedule, not that backoff.
 func TestCIScopeCodexAcknowledgedRequestWaitJourney(t *testing.T) {
+	DisableCIPollBackoff(t)
 	j := newScopeJourney(t, SetupOpts{Agent: "claude"})
 	j.setTrusted("ci:\n  review_bot_comments: always\n")
 	forge := forgeState{Checks: []forgeCheck{greenCheck("build")}, Protection: protectionJSON("build"), ReviewSummaries: []json.RawMessage{json.RawMessage(`{"id":7,"body":"@codex review","created_at":"2026-10-21T12:00:00Z"}`)}, ReviewReactions: map[string][]json.RawMessage{"7": {json.RawMessage(`{"user":{"login":"chatgpt-codex-connector[bot]"},"content":"eyes"}`)}}}
@@ -165,7 +169,7 @@ func TestCIScopeCodexAcknowledgedRequestWaitJourney(t *testing.T) {
 	branch := "feature/codex-acknowledged-wait"
 	j.push(branch)
 	run := j.expectWaiting(branch, "review bot review is pending")
-	deadline := time.Now().Add(4 * time.Minute)
+	deadline := time.Now().Add(20 * time.Minute)
 	for j.ghCalls("/pulls/", "/reviews") < 7 {
 		if time.Now().After(deadline) {
 			t.Fatal("did not observe seven review polls")
@@ -180,7 +184,7 @@ func TestCIScopeCodexAcknowledgedRequestWaitJourney(t *testing.T) {
 	t.Logf("Seven live provider polls remained monitoring without readiness or repair:\n%s", j.ciLog(run.ID))
 	forge.ReviewReactions["7"] = append(forge.ReviewReactions["7"], json.RawMessage(`{"user":{"login":"chatgpt-codex-connector[bot]"},"content":"+1"}`))
 	j.setForge(forge)
-	j.expectReady(branch, scopeCheckWaitTime)
+	j.expectReady(branch, 6*time.Minute)
 	j.finish(branch)
 }
 
