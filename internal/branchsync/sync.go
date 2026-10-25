@@ -2634,9 +2634,11 @@ func unavailableRecoverySource(safety, message string) recoverySourceProof {
 }
 
 // recoverySourceAvailable is the single owner of preserved-head discovery and
-// recovery classification. It first evaluates the ordinary run-specific
-// recovery anchor path. A bound archive can add only one narrower result: keep
-// the exact required local head while the divergent later head stays archived.
+// recovery classification. Claimed archive records must validate before it
+// selects ordinary, bound-archive, or preserved-rebase recovery. Neither
+// keep-local proof authorizes adopting the preserved head;
+// the user-facing conditions are owned by Custody recovery in
+// docs/src/content/docs/reference/cli.md.
 func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run *db.Run) recoverySourceProof {
 	if state == nil || run == nil || strings.TrimSpace(run.HeadSHA) == "" {
 		return unavailableRecoverySource("blocked_recover_unverified_head", "the terminal run has no recorded pipeline head to verify; no files or refs were changed")
