@@ -24,7 +24,7 @@ func TestPRWrappedInlineClaimsPublication(t *testing.T) {
 		for _, tc := range []struct{ name, raw, want string }{
 			{"AI", "Co-Authored-By: Codex <bot@example.invalid>", prAIAttributionNotice},
 			{"configured", "Co-Authored-By: Example, Inc. Bot <opaque@example.com>", prAIAttributionNotice},
-			{"human", "Co-Authored-By: Ada <ada@example.com>", "co-author (quoted): Ada <ada@example.com>"},
+			{"human", "Co-Authored-By: Ada <ada@example.com>", "Co-Authored-By: Ada <ada@example.com>"},
 			{"field", `The field "Co-Authored-By:" identifies Ada <ada@example.com>`, `The field "Co-Authored-By:" identifies Ada <ada@example.com>`},
 			{"code", "`Co-Authored-By: Ada <ada@example.com>`", "`Co-Authored-By: Ada <ada@example.com>`"},
 			{"link", "[Co-Authored-By: Codex <ai@example.com>](https://example.com)", "[Co-Authored-By: Codex <ai@example.com>](https://example.com)"},
@@ -89,6 +89,64 @@ func TestPRWrappedInlineClaimsPublication(t *testing.T) {
 					}
 				}
 			})
+		}
+	}
+}
+
+func TestPRPairedFormattedHumanAndAIInlinePublication(t *testing.T) {
+	for _, layout := range []struct{ open, key, value, close string }{
+		{"**", "Co-Authored-By:", "", "**"},
+		{"**", "Co-Authored-By**:", "", ""},
+		{"**", "Co-Authored-By:**", "", ""},
+		{"<code>", "Co-Authored-By</code>:", "", ""},
+		{"<code>", "Co-Authored-By:</code>", "", ""},
+		{"", "Co-Authored-By:", "<code>", "</code>"},
+		{"", "Co-Authored-By:", "", ""},
+	} {
+		for _, suffix := range []string{".", "&#33;", "&#x21;&#41;", "&quot;&#93;&rbrace;"} {
+			for _, identity := range []struct {
+				name, email string
+				ai          bool
+			}{
+				{"Ada", "ada@example.com", false},
+				{"Codex", "ai@example.com", true},
+				{"Example, Inc. Bot", "opaque@example.com", true},
+			} {
+				for _, escaped := range []bool{false, true} {
+					claim := layout.open + layout.key + " " + layout.value + identity.name + " <" + identity.email + ">" + layout.close
+					if escaped {
+						claim = html.EscapeString(claim)
+					}
+					raw := "Recorded risk " + claim + suffix
+					for _, notice := range []bool{false, true} {
+						want := raw
+						if identity.ai {
+							replacement := ""
+							if notice {
+								replacement = prAIAttributionNotice
+							}
+							want = "Recorded risk " + layout.open + replacement + layout.close + suffix
+							if escaped {
+								want = "Recorded risk " + html.EscapeString(layout.open) + replacement + html.EscapeString(layout.close) + suffix
+							}
+						} else if layout.open == "" && layout.value == "" {
+							want = strings.Replace(raw, "Co-Authored-By:", "co-author (quoted):", 1)
+						}
+						for _, recorded := range []bool{false, true} {
+							input, expected := raw, want
+							if recorded {
+								const tail = `, "escape":"A\u0042\/C", "number":1.200e+3}`
+								input = `{"summary":` + strconv.Quote(raw) + tail
+								expected = `{"summary":` + strconv.Quote(want) + tail
+							}
+							got := prDisplayTextMode(input, notice, "Co-Authored-By: Example, Inc. Bot <opaque@example.com>")
+							if got != expected {
+								t.Errorf("notice=%t recorded=%t input=%q: got %q, want %q", notice, recorded, input, got, expected)
+							}
+						}
+					}
+				}
+			}
 		}
 	}
 }

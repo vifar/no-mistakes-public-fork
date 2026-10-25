@@ -1728,7 +1728,9 @@ func renderCoAuthorAsLabelledField(s string) string {
 }
 
 // publishedCoAuthorKey matches the co-author key wherever it sits in a line.
-var publishedCoAuthorKey = regexp.MustCompile(`(?i)Co-Authored-By([ \t]*:[ \t]*)`)
+var publishedCoAuthorKey = regexp.MustCompile(`(?i)Co-Authored-By((?:[*_~]|</code>|&lt;/code&gt;)*[ \t]*:[ \t]*)`)
+var publishedInlineOpening = regexp.MustCompile(`(?:[*_~]|<code>)+$`)
+var publishedHTMLEntity = regexp.MustCompile(`&(?:#[xX][0-9a-fA-F]+;?|#[0-9]+;?|[A-Za-z][A-Za-z0-9]*;?)`)
 
 // renderInlineCoAuthorKeys renders a co-author key inside a line when the rest
 // of the line is a complete identity (a name and an address), so the line ends
@@ -1759,17 +1761,40 @@ func renderInlineCoAuthorKeys(s string, notice bool, configuredTrailers ...strin
 				strings.HasSuffix(prefix, "‘") && strings.HasPrefix(value, "’") {
 				continue
 			}
-			identity := strings.TrimRight(value, " \t\r.,;:!?\"')]}”’")
-			for wrappers := prefix[len(strings.TrimRight(prefix, "*_~")):]; wrappers != ""; {
-				wrapper := wrappers[:1]
+			opening := publishedInlineOpening.FindString(prefix)
+			closing := ""
+			for wrappers := opening; wrappers != ""; {
+				wrapper, width := wrappers[:1], 1
+				if strings.HasPrefix(wrappers, "<code>") {
+					wrapper, width = "</code>", len("<code>")
+				}
+				closing = wrapper + closing
+				wrappers = wrappers[width:]
+			}
+			identity := value
+			if strings.TrimSpace(sep) == ":" {
+				identity = strings.TrimSpace(strings.TrimPrefix(identity, closing))
+			}
+			identity = strings.TrimRight(identity, " \t\r.,;:!?\"')]}”’")
+			for wrappers := opening; wrappers != ""; {
+				wrapper, width := wrappers[:1], 1
+				if strings.HasPrefix(wrappers, "<code>") {
+					wrapper, width = "</code>", len("<code>")
+				}
 				if !strings.HasSuffix(identity, wrapper) {
 					break
 				}
 				identity = strings.TrimRight(strings.TrimSuffix(identity, wrapper), " \t\r.,;:!?\"')]}”’")
-				wrappers = wrappers[1:]
+				wrappers = wrappers[width:]
 			}
-			claim := "Co-Authored-By: " + identity
-			_, _, _, ai := publishedAttributionEntry([]string{claim}, 0, configuredTrailers)
+			_, unfolded, _, ai := publishedAttributionEntry([]string{"Co-Authored-By: " + identity}, 0, configuredTrailers)
+			formattedValue := strings.TrimSpace(value)
+			if ai {
+				_, identity, _ = strings.Cut(unfolded, ":")
+				identity = strings.TrimSpace(identity)
+			} else if opening != "" || strings.ContainsAny(sep, "*_~<>&") || strings.HasPrefix(formattedValue, "<code>") || strings.TrimLeft(formattedValue, "*_~") != formattedValue {
+				continue
+			}
 			name, _, complete := strings.Cut(strings.TrimSpace(identity), "<")
 			name = strings.TrimSpace(name)
 			if !complete || strings.Count(identity, "<") != 1 || strings.Count(identity, ">") != 1 ||
@@ -1781,11 +1806,20 @@ func renderInlineCoAuthorKeys(s string, notice bool, configuredTrailers ...strin
 				continue
 			}
 			if ai {
+				mailbox := identity[strings.IndexByte(identity, '<'):]
+				mailboxStart := strings.LastIndex(value, mailbox)
+				if mailboxStart < 0 {
+					continue
+				}
+				cut := rawHTMLPrefixEnd(line[end:], mailboxStart+len(mailbox))
+				if cut < 0 {
+					continue
+				}
 				replacement := ""
 				if notice {
 					replacement = prAIAttributionNotice
 				}
-				line = line[:start] + replacement + value[len(identity):]
+				line = line[:start] + replacement + line[end+cut:]
 			} else {
 				line = line[:start] + "co-author (quoted)" + sep + line[end:]
 			}
@@ -1793,6 +1827,28 @@ func renderInlineCoAuthorKeys(s string, notice bool, configuredTrailers ...strin
 		lines[i] = line
 	}
 	return strings.Join(lines, "\n")
+}
+
+func rawHTMLPrefixEnd(raw string, decodedEnd int) int {
+	rawOffset, decodedOffset := 0, 0
+	for _, entity := range publishedHTMLEntity.FindAllStringIndex(raw, -1) {
+		plainLen := entity[0] - rawOffset
+		if decodedEnd <= decodedOffset+plainLen {
+			return rawOffset + decodedEnd - decodedOffset
+		}
+		decodedOffset += plainLen + len(html.UnescapeString(raw[entity[0]:entity[1]]))
+		rawOffset = entity[1]
+		if decodedEnd == decodedOffset {
+			return rawOffset
+		}
+		if decodedEnd < decodedOffset {
+			return -1
+		}
+	}
+	if decodedEnd-decodedOffset > len(raw)-rawOffset {
+		return -1
+	}
+	return rawOffset + decodedEnd - decodedOffset
 }
 
 func inlineCodeSpans(text string) [][2]int {
