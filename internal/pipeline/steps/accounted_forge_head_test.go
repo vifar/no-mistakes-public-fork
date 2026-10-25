@@ -92,7 +92,7 @@ func TestAccountedForgeHeadAttestation(t *testing.T) {
 			}
 			before, _ := c.DB.GetRunPRContext(c.Run.ID)
 			if foreign {
-				h.facts.HeadSHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+				h.facts.HeadSHA = foreignForgeHead(t, c)
 			}
 			err := verifyPRMutationComparison(c, h, pr, c.Run.HeadSHA, true)
 			after, _ := c.DB.GetRunPRContext(c.Run.ID)
@@ -128,7 +128,7 @@ func TestAccountedForgeHeadTargetRewinds(t *testing.T) {
 				before, _ := c.DB.GetRunPRContext(c.Run.ID)
 				selected.ForgeHeadSHA = c.Run.HeadSHA
 				if foreign {
-					selected.ForgeHeadSHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+					selected.ForgeHeadSHA = foreignForgeHead(t, c)
 				}
 				decision, err := guardPRContextWithSelection(c, types.StepTest, selected, false)
 				after, _ := c.DB.GetRunPRContext(c.Run.ID)
@@ -211,7 +211,7 @@ func TestAccountedForgeHeadPushCorrection(t *testing.T) {
 			recordReviewApproval(t, c, c.Run.HeadSHA)
 			c.PRTarget = &pipeline.PRTargetSelection{PRURL: receipt.PRURL, SourceRepo: receipt.SourceRepo, SourceBranch: receipt.SourceBranch, TargetBranch: receipt.TargetBranch, ForgeHeadSHA: c.Run.HeadSHA}
 			if foreign {
-				c.PRTarget.ForgeHeadSHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+				c.PRTarget.ForgeHeadSHA = foreignForgeHead(t, c)
 			}
 			if err = os.WriteFile(filepath.Join(c.WorkDir, "correction.txt"), []byte("correction\n"), 0600); err != nil {
 				t.Fatal(err)
@@ -280,4 +280,15 @@ func TestAccountedForgeHeadWithTargetAndReviewFix(t *testing.T) {
 	if err != nil || decision.RestartFrom != types.StepRebase {
 		t.Fatalf("decision=%+v err=%v", decision, err)
 	}
+}
+
+// foreignForgeHead constructs a real sibling, rather than relying on a missing
+// object being rejected. The worktree is restored before the guard executes.
+func foreignForgeHead(t *testing.T, c *pipeline.StepContext) string {
+	t.Helper()
+	gitCmd(t, c.WorkDir, "checkout", "-b", "foreign-forge", c.Run.BaseSHA)
+	gitCmd(t, c.WorkDir, "commit", "--allow-empty", "-m", "foreign publisher")
+	head := gitCmd(t, c.WorkDir, "rev-parse", "HEAD")
+	gitCmd(t, c.WorkDir, "checkout", "feature")
+	return head
 }
