@@ -340,3 +340,53 @@ func validHex(s string, length int) bool {
 	}
 	return true
 }
+
+// RefreshRunPRForgeHead changes only an accounted forge observation. The caller
+// proves ownership with Git; this transaction rechecks the exact receipt and
+// keeps its comparison generation, review authority and owner evidence intact.
+func (d *DB) RefreshRunPRForgeHead(runID string, expected PRContext, head string) error {
+	next := expected.PRContextCandidate
+	next.ForgeHeadSHA = head
+	if expected.PRURL == "" {
+		return fmt.Errorf("refresh forge head requires an attached PR")
+	}
+	if err := validatePRContextCandidate(next); err != nil {
+		return err
+	}
+	return sqlitewrite.Do(context.Background(), "refresh PR forge head", func(ctx context.Context) error {
+		tx, err := d.sql.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		result, err := tx.ExecContext(ctx, `UPDATE run_pr_contexts SET forge_head_sha=?, observed_at=?
+   WHERE run_id=? AND generation=? AND COALESCE(pr_url,'')=? AND COALESCE(source_repo,'')=?
+   AND COALESCE(source_branch,'')=? AND COALESCE(forge_head_sha,'')=? AND local_head_sha=?
+   AND target_branch=? AND target_sha=? AND merge_base_sha=? AND diff_digest=?`,
+			head, now(), runID, expected.Generation, expected.PRURL, expected.SourceRepo, expected.SourceBranch,
+			expected.ForgeHeadSHA, expected.LocalHeadSHA, expected.TargetBranch, expected.TargetSHA, expected.MergeBaseSHA, expected.DiffDigest)
+		if err != nil {
+			return err
+		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n != 1 {
+			return fmt.Errorf("PR comparison changed while refreshing forge head")
+		}
+		pending, err := pendingTargetRewind(tx, runID)
+		if err != nil {
+			return err
+		}
+		if pending != nil {
+			if pending.ForgeHeadSHA == nil || *pending.ForgeHeadSHA != expected.ForgeHeadSHA || pending.Generation != expected.Generation {
+				return fmt.Errorf("pending rewind changed while refreshing forge head")
+			}
+			if _, err = tx.ExecContext(ctx, `UPDATE run_target_rewinds SET forge_head_sha=? WHERE id=?`, head, pending.ID); err != nil {
+				return err
+			}
+		}
+		return tx.Commit()
+	})
+}

@@ -130,19 +130,22 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 			// it does for every other forward commit. Without this the
 			// attestation's own comparison would refuse the head the pipeline
 			// just committed.
-			//
-			// The FORGE head is the other publisher's claim on the branch. It
-			// is never adopted here: a PR whose head moved while this step
-			// was committing is not this run's head, and the attestation's own
-			// comparison must refuse it.
 			receipt, err := sctx.DB.GetRunPRContext(sctx.Run.ID)
 			if err != nil {
 				return nil, err
 			}
 			if receipt != nil {
-				if selected := sctx.PRTarget; selected != nil && selected.ForgeHeadSHA != "" &&
-					receipt.ForgeHeadSHA != "" && selected.ForgeHeadSHA != receipt.ForgeHeadSHA {
-					return nil, fmt.Errorf("the pull request head moved to %s while the pipeline committed its own changes", shortObjectID(selected.ForgeHeadSHA))
+				if selected := sctx.PRTarget; selected != nil && selected.ForgeHeadSHA != "" {
+					observed := receipt.PRContextCandidate
+					observed.PRURL, observed.SourceBranch, observed.TargetBranch = selected.PRURL, selected.SourceBranch, selected.TargetBranch
+					if !scm.SameSourceRepository(resolvedProvider(sctx), receipt.SourceRepo, selected.SourceRepo) {
+						observed.SourceRepo = selected.SourceRepo
+					}
+					observed.ForgeHeadSHA = selected.ForgeHeadSHA
+					receipt, err = reconcileAccountedForgeHead(sctx, receipt, observed, headSHA)
+					if err != nil {
+						return nil, err
+					}
 				}
 				own, err := prComparisonAtTarget(sctx, receipt.TargetBranch, receipt.TargetSHA, headSHA)
 				if err != nil {

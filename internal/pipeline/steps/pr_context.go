@@ -306,13 +306,70 @@ func runAccountsForPRHead(sctx *pipeline.StepContext, forgeHead, localHead strin
 	}
 	run, err := sctx.DB.GetRun(sctx.Run.ID)
 	if err != nil {
-		return false, fmt.Errorf("read run publication before retarget: %w", err)
+		return false, fmt.Errorf("read run publication for PR head: %w", err)
 	}
 	if run != nil && run.LastPushedSHA != nil && *run.LastPushedSHA == forgeHead {
 		return true, nil
 	}
 	_, err = git.Run(sctx.Ctx, sctx.WorkDir, "merge-base", "--is-ancestor", forgeHead, localHead)
 	return err == nil, nil
+}
+
+// reconcileAccountedForgeHead does not bless a local or target transition.
+// trustedHead is an already pinned head or one independently attributed by the
+// caller. Only the forge observation is refreshed; ordinary guards still own
+// every other field and comparison generation.
+func reconcileAccountedForgeHead(sctx *pipeline.StepContext, previous *db.PRContext, candidate db.PRContextCandidate, trustedHead string) (*db.PRContext, error) {
+	if previous == nil || previous.PRURL == "" || previous.ForgeHeadSHA == candidate.ForgeHeadSHA {
+		return previous, nil
+	}
+	if previous.PRURL != candidate.PRURL || previous.SourceRepo != candidate.SourceRepo || previous.SourceBranch != candidate.SourceBranch || previous.TargetBranch != candidate.TargetBranch {
+		return nil, fmt.Errorf("pull request identity, source, or target changed alongside forge head")
+	}
+	accounted, err := runAccountsForPRHead(sctx, candidate.ForgeHeadSHA, trustedHead)
+	if err != nil {
+		return nil, err
+	}
+	if !accounted {
+		return nil, fmt.Errorf("unaccounted pull request head %s differs from pinned forge head %s and local head %s", candidate.ForgeHeadSHA, previous.ForgeHeadSHA, trustedHead)
+	}
+	if err := sctx.DB.RefreshRunPRForgeHead(sctx.Run.ID, *previous, candidate.ForgeHeadSHA); err != nil {
+		return nil, err
+	}
+	refreshed := *previous
+	refreshed.ForgeHeadSHA = candidate.ForgeHeadSHA
+	if sctx.PRContext != nil && sctx.PRContext.Generation == previous.Generation && sctx.PRContext.PRContextCandidate == previous.PRContextCandidate {
+		sctx.PRContext = &refreshed
+	}
+	if sctx.Log != nil {
+		sctx.Log(fmt.Sprintf("accounted forge receipt: pinned=%s observed=%s local=%s generation=%d", previous.ForgeHeadSHA, candidate.ForgeHeadSHA, trustedHead, previous.Generation))
+	}
+	return &refreshed, nil
+}
+
+// The same proofs used by forward/rebase classification below determine which
+// local head may account for a simultaneous forge observation. A mutable run
+// head alone is never evidence of an allowed local transition.
+func accountedForgeLocalHead(sctx *pipeline.StepContext, step types.StepName, previous *db.PRContext, candidate db.PRContextCandidate) string {
+	if previous == nil {
+		return candidate.LocalHeadSHA
+	}
+	if previous.LocalHeadSHA == candidate.LocalHeadSHA || !sctx.PRContextAfterStep || candidate.LocalHeadSHA != sctx.Run.HeadSHA {
+		return previous.LocalHeadSHA
+	}
+	if step == types.StepRebase && sctx.PRContextRebaseCompleted {
+		return candidate.LocalHeadSHA
+	}
+	if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "merge-base", "--is-ancestor", previous.LocalHeadSHA, candidate.LocalHeadSHA); err != nil {
+		return previous.LocalHeadSHA
+	}
+	if step.Order() >= types.StepReview.Order() && step.Order() <= types.StepLint.Order() {
+		return candidate.LocalHeadSHA
+	}
+	if err := sctx.DB.ValidatePipelineHeadForward(sctx.Run.ID, previous.LocalHeadSHA, candidate.LocalHeadSHA); err == nil {
+		return candidate.LocalHeadSHA
+	}
+	return previous.LocalHeadSHA
 }
 
 func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName, selection pipeline.PRTargetSelection, freshRetarget bool) (decision pipeline.PRContextDecision, err error) {
@@ -354,6 +411,17 @@ func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName
 		candidate.SourceRepo = previous.SourceRepo
 	}
 
+	if !freshRetarget {
+		previous, err = reconcileAccountedForgeHead(sctx, previous, candidate, accountedForgeLocalHead(sctx, step, previous, candidate))
+		if err != nil {
+			return pipeline.PRContextDecision{}, err
+		}
+		// A pending integration pins the same forge observation atomically.
+		pending, err = sctx.DB.GetPendingTargetRewind(sctx.Run.ID)
+		if err != nil {
+			return pipeline.PRContextDecision{}, err
+		}
+	}
 	if pending != nil && !samePendingRewindIdentity(sctx, pending, previous, candidate, selection) {
 		return pipeline.PRContextDecision{}, fmt.Errorf("PR comparison changed during pending rewind; start a new run")
 	}
@@ -489,10 +557,8 @@ func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName
 	// file fails the run at the publication boundary - the same class of
 	// false failure as the target advance this guard also recovers from.
 	//
-	// The LOCAL commit lineage says nothing about the forge's head. Another
-	// publisher moving the attached PR is not this run's advance, so the
-	// forge identity and head must be unchanged here; a published-head
-	// transition has its own proof below.
+	// The forge observation has already passed its independent accounted-head
+	// rule above. Local lineage alone never authorizes an unaccounted head.
 	if previous != nil && sctx.PRContextAfterStep && !forward &&
 		previous.LocalHeadSHA != candidate.LocalHeadSHA &&
 		previous.TargetSHA == candidate.TargetSHA && sameRewindIdentity(previous, candidate) {
@@ -670,9 +736,20 @@ func verifyPRMutationComparison(sctx *pipeline.StepContext, host scm.Host, pr *s
 	}
 	if facts.State != scm.PRStateOpen || !samePRIdentity(pr.URL, &facts.PR) ||
 		!scm.SameSourceRepository(resolvedProvider(sctx), facts.SourceRepository, receipt.SourceRepo) ||
-		facts.SourceBranch != receipt.SourceBranch || facts.HeadSHA != forgeHead ||
+		facts.SourceBranch != receipt.SourceBranch ||
 		facts.BaseBranch != receipt.TargetBranch {
 		return fmt.Errorf("live pull request differs from its comparison receipt before update")
+	}
+	if facts.HeadSHA != forgeHead {
+		if receipt.PRURL == "" {
+			return fmt.Errorf("live pull request differs from its unbound observation before update")
+		}
+		observed := receipt.PRContextCandidate
+		observed.ForgeHeadSHA = facts.HeadSHA
+		receipt, err = reconcileAccountedForgeHead(sctx, receipt, observed, receipt.LocalHeadSHA)
+		if err != nil {
+			return err
+		}
 	}
 	selection := pipeline.PRTargetSelection{TargetBranch: receipt.TargetBranch}
 	current, err := readPRComparison(sctx, selection)

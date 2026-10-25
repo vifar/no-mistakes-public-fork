@@ -42,7 +42,13 @@ func TestPRContextGuardLocalLineagePreservesForgeHead(t *testing.T) {
 						advanceRewindTarget(t, c)
 					}
 					if forgeMoves {
-						selected.ForgeHeadSHA = c.Run.BaseSHA
+						// A genuine foreign sibling is not accounted for by the run.
+						// An ancestor such as BaseSHA is an allowed forge-only
+						// observation under the shared receipt refresh rule.
+						gitCmd(t, c.WorkDir, "checkout", "-b", "foreign-forge-head", c.Run.BaseSHA)
+						gitCmd(t, c.WorkDir, "commit", "--allow-empty", "-m", "foreign publisher")
+						selected.ForgeHeadSHA = gitCmd(t, c.WorkDir, "rev-parse", "HEAD")
+						gitCmd(t, c.WorkDir, "checkout", "feature")
 					}
 					c.PRContextAfterStep = true
 					decision, err := guardPRContextWithSelection(c, step, selected, false)
