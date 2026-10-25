@@ -144,7 +144,7 @@ func commitLeftoverValidationEdits(c *pipeline.StepContext) (bool, error) {
 // need generated runtime files cannot run there) and the subject names the
 // step that produced the edits.
 func commitWorktreeEdits(c *pipeline.StepContext, producer, reason string) (bool, string, error) {
-	status, err := git.Run(c.Ctx, c.WorkDir, "status", "--porcelain")
+	status, err := git.Run(c.Ctx, c.WorkDir, "status", "--porcelain", "--untracked-files=all")
 	if err != nil {
 		return false, "", fmt.Errorf("check leftover validation edits: %w", err)
 	}
