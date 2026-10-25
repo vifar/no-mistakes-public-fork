@@ -52,7 +52,7 @@ func TestAxiPreservedRebaseOffersExecutableRecovery(t *testing.T) {
 	local := cliGit(t, f.local, "rev-parse", "HEAD")
 	t.Logf("R=%s L=%s P=%s ref=%s", f.submitted, local, preserved, anchor)
 	command := "no-mistakes axi sync --recover --keep-local --authoritative-head " + local
-	for _, args := range [][]string{{"axi", "status"}, {"axi", "status", "--json"}, {"axi", "sync", "--check"}} {
+	for _, args := range [][]string{{"axi", "status"}, {"axi", "status", "--json"}, {"axi", "sync", "--check"}, {"sync", "--check"}} {
 		out, _ := executeCmd(args...)
 		t.Logf("%v:\n%s", args, out)
 		if !strings.Contains(out, command) || !strings.Contains(out, preserved) || !strings.Contains(out, anchor) {

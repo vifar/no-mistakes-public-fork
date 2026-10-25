@@ -395,6 +395,9 @@ func printHumanSyncState(cmd *cobra.Command, state branchsync.State) {
 	if state.Error != "" {
 		fmt.Fprintf(w, "  blocked:  %s\n", state.Error)
 	}
+	if state.NextAction != nil {
+		fmt.Fprintf(w, "  next action: %s\n", state.NextAction.Command)
+	}
 }
 
 func humanSyncSummary(state branchsync.State) string {
