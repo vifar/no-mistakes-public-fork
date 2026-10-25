@@ -1387,13 +1387,10 @@ func TestAxiArchiveBackedRecoveryKeepsExactRequiredHeadAndBothHistories(t *testi
 		t.Fatal("synthetic required head unexpectedly descends from later head")
 	}
 
-	// Initiating trigger: a terminal run recorded a divergent later head.
-	// Masking condition: ordinary take-the-preserved-head eligibility cannot
-	// prove containment. Visible symptom: status asks for manual reconciliation
-	// and does not offer keep-local. blocked_recover_preserved_head_missing is
-	// reserved for a verified head that is truly absent (#958); the archive
-	// target and gate anchor below are disconfirming evidence for that, and
-	// without a binding they still must not be treated as authority.
+	// The unbound archive grants no authority. Independently, the exact gate
+	// recovery anchor and clean last-pushed local head now prove the supported
+	// authoritative keep-local offer (#228). Binding the archive below still
+	// switches to its stricter immutable archive proof and revalidation.
 	beforeDetection := cliRecoveryGitSnapshot(t, f)
 	status, err := executeCmd("axi", "status", "--run", f.runID)
 	if err != nil {
@@ -1401,14 +1398,17 @@ func TestAxiArchiveBackedRecoveryKeepsExactRequiredHeadAndBothHistories(t *testi
 	}
 	for _, want := range []string{
 		"relation: diverged",
-		"safety: blocked_recover_manual_reconciliation",
-		"code: inspect_and_reconcile_manually",
+		"safety: blocked_pipeline_owned_recoverable",
+		"source: preserved_rebase",
+		"archive_ref: refs/no-mistakes/recover/" + f.runID,
+		"code: recover_custody",
+		"command: no-mistakes axi sync --recover --keep-local --authoritative-head " + f.submitted,
 	} {
 		if !strings.Contains(status, want) {
 			t.Errorf("initial status missing %q:\n%s", want, status)
 		}
 	}
-	if strings.Contains(status, "command: no-mistakes axi sync --recover --keep-local") {
+	if strings.Contains(status, "source: bound_archive") {
 		t.Fatalf("unbound archive was trusted:\n%s", status)
 	}
 	if after := cliRecoveryGitSnapshot(t, f); after != beforeDetection {
