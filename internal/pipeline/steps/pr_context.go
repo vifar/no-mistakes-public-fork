@@ -315,6 +315,15 @@ func runAccountsForPRHead(sctx *pipeline.StepContext, forgeHead, localHead strin
 	return err == nil, nil
 }
 
+// samePRContextIdentity excludes the forge observation and commit comparison:
+// those have their own proofs. A missing or different identity must reach the
+// ordinary guard rather than being reclassified as a forge-only refresh.
+func samePRContextIdentity(previous *db.PRContext, candidate db.PRContextCandidate) bool {
+	return previous != nil && previous.PRURL == candidate.PRURL &&
+		previous.SourceRepo == candidate.SourceRepo && previous.SourceBranch == candidate.SourceBranch &&
+		previous.TargetBranch == candidate.TargetBranch
+}
+
 // reconcileAccountedForgeHead does not bless a local or target transition.
 // trustedHead is an already pinned head or one independently attributed by the
 // caller. Only the forge observation is refreshed; ordinary guards still own
@@ -323,7 +332,7 @@ func reconcileAccountedForgeHead(sctx *pipeline.StepContext, previous *db.PRCont
 	if previous == nil || previous.PRURL == "" || previous.ForgeHeadSHA == candidate.ForgeHeadSHA {
 		return previous, nil
 	}
-	if previous.PRURL != candidate.PRURL || previous.SourceRepo != candidate.SourceRepo || previous.SourceBranch != candidate.SourceBranch || previous.TargetBranch != candidate.TargetBranch {
+	if !samePRContextIdentity(previous, candidate) {
 		return nil, fmt.Errorf("pull request identity, source, or target changed alongside forge head")
 	}
 	accounted, err := runAccountsForPRHead(sctx, candidate.ForgeHeadSHA, trustedHead)
@@ -411,7 +420,7 @@ func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName
 		candidate.SourceRepo = previous.SourceRepo
 	}
 
-	if !freshRetarget {
+	if !freshRetarget && samePRContextIdentity(previous, candidate) {
 		previous, err = reconcileAccountedForgeHead(sctx, previous, candidate, accountedForgeLocalHead(sctx, step, previous, candidate))
 		if err != nil {
 			return pipeline.PRContextDecision{}, err

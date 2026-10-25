@@ -35,7 +35,7 @@ func sameRewindSource(a, b *string) bool {
 	return a == nil && b == nil || a != nil && b != nil && *a == *b
 }
 func sameRewindIdentity(p *db.PRContext, c db.PRContextCandidate) bool {
-	return p.PRURL == c.PRURL && p.SourceRepo == c.SourceRepo && p.SourceBranch == c.SourceBranch && p.TargetBranch == c.TargetBranch && p.ForgeHeadSHA == c.ForgeHeadSHA
+	return samePRContextIdentity(p, c) && p.ForgeHeadSHA == c.ForgeHeadSHA
 }
 
 // samePendingRewindIdentity validates the full discovery observation, even
