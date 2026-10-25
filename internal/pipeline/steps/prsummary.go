@@ -1761,13 +1761,12 @@ func renderInlineCoAuthorKeys(s string, notice bool, configuredTrailers ...strin
 			}
 			identity := strings.TrimRight(value, " \t\r.,;:!?\"')]}”’")
 			for wrappers := prefix[len(strings.TrimRight(prefix, "*_~")):]; wrappers != ""; {
-				rest := strings.TrimLeft(wrappers, wrappers[:1])
-				wrapper := wrappers[:len(wrappers)-len(rest)]
+				wrapper := wrappers[:1]
 				if !strings.HasSuffix(identity, wrapper) {
 					break
 				}
 				identity = strings.TrimRight(strings.TrimSuffix(identity, wrapper), " \t\r.,;:!?\"')]}”’")
-				wrappers = rest
+				wrappers = wrappers[1:]
 			}
 			claim := "Co-Authored-By: " + identity
 			_, _, _, ai := publishedAttributionEntry([]string{claim}, 0, configuredTrailers)

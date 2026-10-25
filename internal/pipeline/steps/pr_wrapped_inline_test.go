@@ -18,6 +18,8 @@ func TestPRWrappedInlineClaimsPublication(t *testing.T) {
 		{"~~", "~~", "."}, {"***", "***", "."}, {"**_", "_**", "."},
 		{"**", ".**", ""}, {"*", ".*", "!"}, {"__", ";__", "?"}, {"_", ":_", "."},
 		{"~~", "!~~", "."}, {"***", "?***", "."}, {"**_", "._**", ""}, {"**_", "._!**", "?"},
+		{"***", "**.*", ""}, {"***", "*.**", "!"}, {"___", "__._", ""}, {"___", "_;__", "?"},
+		{"**_", "_*.*", "."},
 	} {
 		for _, tc := range []struct{ name, raw, want string }{
 			{"AI", "Co-Authored-By: Codex <bot@example.invalid>", prAIAttributionNotice},
@@ -25,6 +27,7 @@ func TestPRWrappedInlineClaimsPublication(t *testing.T) {
 			{"human", "Co-Authored-By: Ada <ada@example.com>", "co-author (quoted): Ada <ada@example.com>"},
 			{"field", `The field "Co-Authored-By:" identifies Ada <ada@example.com>`, `The field "Co-Authored-By:" identifies Ada <ada@example.com>`},
 			{"code", "`Co-Authored-By: Ada <ada@example.com>`", "`Co-Authored-By: Ada <ada@example.com>`"},
+			{"link", "[Co-Authored-By: Codex <ai@example.com>](https://example.com)", "[Co-Authored-By: Codex <ai@example.com>](https://example.com)"},
 		} {
 			t.Run(wrapper[0]+"/"+tc.name+"/"+wrapper[1]+wrapper[2], func(t *testing.T) {
 				raw := "Recorded risk " + wrapper[0] + tc.raw + wrapper[1] + wrapper[2]
