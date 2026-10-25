@@ -107,9 +107,10 @@ func repoID(absPath string) string {
 // isolation, or restoring a missing remote) instead of failing. This includes
 // a working directory that was renamed or moved since the gate was created:
 // the gate identified by the leftover no-mistakes remote is reattached at the
-// new path, preserving its run history. The returned bool reports whether a
-// new registration was created (true), including adoption of an unregistered
-// gate, or an existing registration was refreshed (false).
+// new path, preserving its run history. The returned bool reports whether this
+// call created a new gate directory (true) or registered or refreshed a gate
+// that already existed (false). Callers may only roll back (eject) a gate when
+// it is true: a gate that was already there is never this call's to delete.
 func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Repo, bool, error) {
 	return InitWithFork(ctx, d, p, workDir, "")
 }
@@ -296,7 +297,7 @@ func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkUR
 	}
 
 	slog.Info("gate initialized", "repo_id", id, "path", absRoot, "upstream", redactedUpstreamURL)
-	return repo, true, nil
+	return repo, gateDirCreated, nil
 }
 
 // pathPresent reports whether anything at all - a directory, a file or a
