@@ -49,7 +49,7 @@ func TestCIReadyReceiptCodexPolicyAndCompletion(t *testing.T) {
 				policy.ExternalChecks = []string{tc.external}
 			}
 			recordScope(t, f, policy)
-			_, err := Export(context.Background(), f.database, f.repo, f.run.ID, "ci-ready", &codexReceiptForge{commentReceiptForge: comments, pending: tc.pending})
+			_, err := Export(context.Background(), f.database, f.repo, f.run.ID, "ci-ready", &codexReceiptForge{commentReceiptForge: comments, pending: tc.pending}, f.global)
 			if (err == nil) != tc.ready {
 				t.Fatalf("receipt err=%v want ready=%v", err, tc.ready)
 			}

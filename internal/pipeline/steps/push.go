@@ -665,9 +665,9 @@ func shippingTargetCurrent(sctx *pipeline.StepContext, head string) (bool, error
 	if err != nil {
 		return false, err
 	}
-	if target == c.TargetSHA || !keepsCleanHeads(sctx) {
-		return target == c.TargetSHA, nil
+	if target == c.TargetSHA {
+		return true, nil
 	}
 	// A target that merely moved keeps the approved comparison (#237).
-	return shipping.TargetAdvancedCleanly(sctx.Ctx, sctx.WorkDir, targetURL, sctx.Run, c, target)
+	return shipping.TargetAdvancedCleanly(sctx.Ctx, sctx.WorkDir, targetURL, sctx.Run, c, target, keepsCleanHeads(sctx))
 }

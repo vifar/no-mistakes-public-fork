@@ -219,7 +219,7 @@ Previous review findings to address:
 	}
 	var reviewGeneration int64
 	if sctx.Run.Shipping != nil {
-		comparison, err := shipping.Capture(ctx, sctx.DB, sctx.Repo, sctx.Run, sctx.WorkDir, effectivePRBaseBranch(sctx))
+		comparison, err := shipping.Capture(ctx, sctx.DB, sctx.Repo, sctx.Run, sctx.WorkDir, effectivePRBaseBranch(sctx), keepsCleanHeads(sctx))
 		if err != nil {
 			return nil, err
 		}

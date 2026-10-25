@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/testgit"
@@ -32,6 +33,7 @@ func (h *receiptForge) GetPRFacts(context.Context, *scm.PR) (scm.PRFacts, error)
 func (h *receiptForge) GetChecks(context.Context, *scm.PR) ([]scm.Check, error) { return h.checks, nil }
 
 type exportFixture struct {
+	global   *config.GlobalConfig
 	database *db.DB
 	repo     *db.Repo
 	run      *db.Run
@@ -64,6 +66,11 @@ func newExportFixtureWithDraft(t *testing.T, draft *bool) *exportFixture {
 
 func newExportFixtureWithShipping(t *testing.T, options *types.ShippingOptions) *exportFixture {
 	t.Helper()
+	return newExportFixtureWithPolicy(t, options, "", "")
+}
+
+func newExportFixtureWithPolicy(t *testing.T, options *types.ShippingOptions, trusted, pushed string) *exportFixture {
+	t.Helper()
 	root := t.TempDir()
 	dir := filepath.Join(root, "worktree")
 	remote := filepath.Join(root, "origin.git")
@@ -78,12 +85,24 @@ func newExportFixtureWithShipping(t *testing.T, options *types.ShippingOptions) 
 	if err := os.WriteFile(filepath.Join(dir, "source.txt"), []byte("base\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
+	if trusted != "" {
+		if err := os.WriteFile(filepath.Join(dir, ".no-mistakes.yaml"), []byte(trusted), 0644); err != nil {
+			t.Fatal(err)
+		}
+		receiptGit(t, dir, "add", ".no-mistakes.yaml")
+	}
 	receiptGit(t, dir, "add", "source.txt")
 	receiptGit(t, dir, "commit", "-m", "base")
 	base := receiptGit(t, dir, "rev-parse", "HEAD")
 	receiptGit(t, dir, "switch", "-c", "feature")
 	if err := os.WriteFile(filepath.Join(dir, "source.txt"), []byte("feature\n"), 0644); err != nil {
 		t.Fatal(err)
+	}
+	if pushed != "" {
+		if err := os.WriteFile(filepath.Join(dir, ".no-mistakes.yaml"), []byte(pushed), 0644); err != nil {
+			t.Fatal(err)
+		}
+		receiptGit(t, dir, "add", ".no-mistakes.yaml")
 	}
 	receiptGit(t, dir, "commit", "-am", "feature")
 	head := receiptGit(t, dir, "rev-parse", "HEAD")
@@ -142,14 +161,14 @@ func newExportFixtureWithShipping(t *testing.T, options *types.ShippingOptions) 
 		t.Fatal(err)
 	}
 	forge := &receiptForge{facts: scm.PRFacts{URL: prURL, State: scm.PRStateOpen, SourceRepo: "owner/project", SourceBranch: "feature", HeadSHA: head, TargetRepo: "owner/project", TargetBranch: "main", TargetSHA: base}, checks: []scm.Check{{Name: "approval", Bucket: scm.CheckBucketPending}}}
-	return &exportFixture{database, repo, run, forge, dir}
+	return &exportFixture{config.DefaultGlobalConfig(), database, repo, run, forge, dir}
 }
 
 func TestExportRefusesPinnedDraftDrift(t *testing.T) {
 	draft := false
 	f := newExportFixtureWithDraft(t, &draft)
 	f.forge.facts.Draft = true
-	if _, err := Export(context.Background(), f.database, f.repo, f.run.ID, "review", f.forge); err == nil {
+	if _, err := Export(context.Background(), f.database, f.repo, f.run.ID, "review", f.forge, f.global); err == nil {
 		t.Fatal("draft drift accepted")
 	}
 }
@@ -160,7 +179,7 @@ func TestExportPreservesPinnedDraftInReceipt(t *testing.T) {
 	draft := true
 	f := newExportFixtureWithDraft(t, &draft)
 	f.forge.facts.Draft = true
-	raw, err := Export(context.Background(), f.database, f.repo, f.run.ID, "review", f.forge)
+	raw, err := Export(context.Background(), f.database, f.repo, f.run.ID, "review", f.forge, f.global)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +214,7 @@ func TestExportPreservesPinnedDraftInReceipt(t *testing.T) {
 func TestExportReviewBeforeApprovalThenExactCIReady(t *testing.T) {
 	f := newExportFixture(t)
 	ctx := context.Background()
-	raw, err := Export(ctx, f.database, f.repo, f.run.ID, "review", f.forge)
+	raw, err := Export(ctx, f.database, f.repo, f.run.ID, "review", f.forge, f.global)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,18 +228,18 @@ func TestExportReviewBeforeApprovalThenExactCIReady(t *testing.T) {
 	if p.Review.Findings == nil {
 		t.Fatal("empty findings emitted null")
 	}
-	if _, err := Export(ctx, f.database, f.repo, f.run.ID, "ci-ready", f.forge); err == nil {
+	if _, err := Export(ctx, f.database, f.repo, f.run.ID, "ci-ready", f.forge, f.global); err == nil {
 		t.Fatal("pending CI claimed ready")
 	}
 	if err := f.database.SetRunCIReadyWithReason(f.run.ID, true, false); err != nil {
 		t.Fatal(err)
 	}
 	f.forge.checks = []scm.Check{{Name: "approval", Bucket: scm.CheckBucketPass}, {Name: "unaffected optional lane", Bucket: scm.CheckBucketSkip}}
-	if _, err := Export(ctx, f.database, f.repo, f.run.ID, "ci-ready", f.forge); err != nil {
+	if _, err := Export(ctx, f.database, f.repo, f.run.ID, "ci-ready", f.forge, f.global); err != nil {
 		t.Fatal(err)
 	}
 	f.forge.checks = nil
-	if _, err := Export(ctx, f.database, f.repo, f.run.ID, "ci-ready", f.forge); err == nil {
+	if _, err := Export(ctx, f.database, f.repo, f.run.ID, "ci-ready", f.forge, f.global); err == nil {
 		t.Fatal("empty checks accepted")
 	}
 }
@@ -263,7 +282,7 @@ func TestExportRefusesRacesOverridesSkipsAndActionableFindings(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if _, err := Export(context.Background(), f.database, f.repo, f.run.ID, "review", f.forge); err == nil {
+			if _, err := Export(context.Background(), f.database, f.repo, f.run.ID, "review", f.forge, f.global); err == nil {
 				t.Fatal("invalid proof accepted")
 			}
 		})
@@ -297,7 +316,7 @@ func exportAgainstAdvancedTarget(t *testing.T, file string) error {
 		t.Fatal(err)
 	}
 	f.forge.facts.TargetSHA = target
-	_, err = Export(context.Background(), f.database, f.repo, f.run.ID, "review", f.forge)
+	_, err = Export(context.Background(), f.database, f.repo, f.run.ID, "review", f.forge, f.global)
 	return err
 }
 
@@ -384,7 +403,7 @@ func TestExportNoSurfaceAcknowledgment(t *testing.T) {
 				if err := f.database.CompleteStep(sr.ID, exit, 1, ""); err != nil {
 					t.Fatal(err)
 				}
-				exported, err := Export(context.Background(), f.database, f.repo, f.run.ID, "review", f.forge)
+				exported, err := Export(context.Background(), f.database, f.repo, f.run.ID, "review", f.forge, f.global)
 				if kind != "genuine" {
 					if err == nil {
 						t.Fatal("invalid Test completion received a strict receipt")
@@ -408,7 +427,7 @@ func TestExportNoSurfaceAcknowledgment(t *testing.T) {
 				if got.ApprovalReason == nil || *got.ApprovalReason != reason || got.FindingsJSON == nil || *got.FindingsJSON != raw {
 					t.Fatalf("receipt export changed acknowledgment evidence: %+v", got)
 				}
-				if _, err := Export(context.Background(), f.database, f.repo, f.run.ID, "ci-ready", f.forge); err == nil {
+				if _, err := Export(context.Background(), f.database, f.repo, f.run.ID, "ci-ready", f.forge, f.global); err == nil {
 					t.Fatal("Test acknowledgment waived required hosted CI")
 				}
 			})
@@ -456,7 +475,7 @@ func TestExportAcceptedTestGap(t *testing.T) {
 			if err := f.database.CompleteStep(sr.ID, exit, 1, ""); err != nil {
 				t.Fatal(err)
 			}
-			exported, err := Export(context.Background(), f.database, f.repo, f.run.ID, "review", f.forge)
+			exported, err := Export(context.Background(), f.database, f.repo, f.run.ID, "review", f.forge, f.global)
 			if kind != "accepted" {
 				if err == nil {
 					t.Fatal("receipt issued without a valid accepted gap")

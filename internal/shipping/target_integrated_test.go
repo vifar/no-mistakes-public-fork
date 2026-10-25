@@ -53,13 +53,16 @@ func TestTargetIntegratedAndAdvancedCleanly(t *testing.T) {
 
 	full := &db.Run{Shipping: &types.ShippingOptions{Mode: types.ShippingFull}}
 	immutable := &db.Run{Shipping: &types.ShippingOptions{Mode: types.ShippingImmutableSource}}
-	if ok, err := TargetAdvancedCleanly(ctx, f.dir, f.repo.UpstreamURL, full, reviewed, receiptGit(t, f.dir, "rev-parse", clean)); err != nil || !ok {
+	if ok, err := TargetAdvancedCleanly(ctx, f.dir, f.repo.UpstreamURL, full, reviewed, receiptGit(t, f.dir, "rev-parse", clean), true); err != nil || !ok {
 		t.Fatalf("a pure advance did not keep the approved comparison: %v %v", ok, err)
 	}
-	if ok, err := TargetAdvancedCleanly(ctx, f.dir, f.repo.UpstreamURL, full, reviewed, conflict); err != nil || ok {
+	if ok, err := TargetAdvancedCleanly(ctx, f.dir, f.repo.UpstreamURL, full, reviewed, conflict, true); err != nil || ok {
 		t.Fatalf("a conflicting advance kept the approved comparison: %v %v", ok, err)
 	}
-	if ok, err := TargetAdvancedCleanly(ctx, f.dir, f.repo.UpstreamURL, immutable, reviewed, clean); err != nil || ok {
+	if ok, err := TargetAdvancedCleanly(ctx, f.dir, f.repo.UpstreamURL, full, reviewed, clean, false); err != nil || ok {
+		t.Fatalf("integrate always accepted a moved target: %v %v", ok, err)
+	}
+	if ok, err := TargetAdvancedCleanly(ctx, f.dir, f.repo.UpstreamURL, immutable, reviewed, clean, true); err != nil || ok {
 		t.Fatalf("an immutable source accepted a moved target: %v %v", ok, err)
 	}
 }

@@ -894,10 +894,10 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 				return nil, err
 			}
 			advanced := false
-			if tip != comparison.TargetSHA && keepsCleanHeads(sctx) {
+			if tip != comparison.TargetSHA {
 				// A target that merely moved keeps the approved comparison
 				// and the CI already observed on its head (#237).
-				if advanced, err = shipping.TargetAdvancedCleanly(ctx, sctx.WorkDir, upstreamURL, sctx.Run, comparison, tip); err != nil {
+				if advanced, err = shipping.TargetAdvancedCleanly(ctx, sctx.WorkDir, upstreamURL, sctx.Run, comparison, tip, keepsCleanHeads(sctx)); err != nil {
 					return nil, err
 				}
 			}
@@ -1465,13 +1465,10 @@ func verifyShippingMergedProof(sctx *pipeline.StepContext, host scm.Host, pr *sc
 		return fmt.Errorf("merged PR differs from approved shipping comparison")
 	}
 	if facts.TargetSHA != c.TargetSHA {
-		advanced := false
-		if keepsCleanHeads(sctx) {
-			upstreamURL := git.ResolveUpstreamURL(sctx.Ctx, sctx.WorkDir, sctx.Repo.UpstreamURL, sctx.Repo.URLsVerified)
-			advanced, err = shipping.TargetAdvancedCleanly(sctx.Ctx, sctx.WorkDir, upstreamURL, sctx.Run, c, facts.TargetSHA)
-			if err != nil {
-				return err
-			}
+		upstreamURL := git.ResolveUpstreamURL(sctx.Ctx, sctx.WorkDir, sctx.Repo.UpstreamURL, sctx.Repo.URLsVerified)
+		advanced, err := shipping.TargetAdvancedCleanly(sctx.Ctx, sctx.WorkDir, upstreamURL, sctx.Run, c, facts.TargetSHA, keepsCleanHeads(sctx))
+		if err != nil {
+			return err
 		}
 		if !advanced {
 			return fmt.Errorf("merged PR differs from approved shipping comparison")

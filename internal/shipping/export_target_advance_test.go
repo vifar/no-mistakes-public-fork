@@ -52,7 +52,7 @@ func TestExportAfterTargetAdvance(t *testing.T) {
 				if err := f.database.SetRunCIReadyWithReason(f.run.ID, true, false); err != nil {
 					t.Fatal(err)
 				}
-				raw, err := Export(context.Background(), f.database, f.repo, f.run.ID, phase, f.forge)
+				raw, err := Export(context.Background(), f.database, f.repo, f.run.ID, phase, f.forge, f.global)
 				if kind != "clean" {
 					if err == nil {
 						t.Fatal("invalid target or identity accepted")
