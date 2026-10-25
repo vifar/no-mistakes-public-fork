@@ -10,14 +10,9 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// PreservedHumanCoauthorLabel is the published label for a preserved human
-// co-author. The commit keeps the trailer verbatim; only the published body
-// renders it as a labelled field, so no text check can mistake the preserved
-// human co-author for AI attribution.
-//
-// It is the same label the shared publication rule renders (main's
-// "co-author (quoted):"), so the published body carries ONE form of it
-// whichever path published it.
+// PreservedHumanCoauthorLabel labels raw human co-author trailers in published
+// text. The PR section of docs/src/content/docs/reference/pipeline-steps.md
+// owns the presentation rules, including the formatted inline prose exception.
 const PreservedHumanCoauthorLabel = "co-author (quoted):"
 
 // prAIAttributionNotice is what a published generated section shows in place
@@ -26,9 +21,8 @@ const PreservedHumanCoauthorLabel = "co-author (quoted):"
 // survives in the published body.
 const prAIAttributionNotice = "<no-mistakes: AI attribution line neutralized>"
 
-// prDisplayText renders one published text block: AI attribution and the
-// exactly configured trailers are removed, a preserved human co-author becomes a
-// labelled field, and ordinary prose is left alone.
+// prDisplayText applies the PR attribution display rules from
+// docs/src/content/docs/reference/pipeline-steps.md to one published text block.
 //
 // A recorded payload keeps its line breaks as the two-character escape, so its
 // entries are one line to a line-based scanner. Such a line is filtered through
@@ -375,12 +369,9 @@ func parsePRDisplayFindings(text string, configuredTrailers ...string) (types.Fi
 	return prDisplayFindings(raw, configuredTrailers...), nil
 }
 
-// prDisplayBody normalises a whole published PR body. The body is assembled
+// prDisplayBody filters a whole published PR body. The body is assembled
 // from several owners — the agent's narrative, the recorded evidence and the
-// generated appendix — and a preserved human co-author can reach any of them,
-// so the body is filtered as one text block: every published copy of the
-// preserved human co-author becomes a labelled field, AI attribution and the
-// exactly configured trailers are removed, and ordinary prose is left alone.
+// generated appendix — so every component must pass through prDisplayText.
 func prDisplayBody(body string, configuredTrailers ...string) string {
 	return prDisplayText(body, configuredTrailers...)
 }

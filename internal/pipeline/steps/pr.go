@@ -749,7 +749,7 @@ func (s *PRStep) buildPipelineSectionFor(sctx *pipeline.StepContext, provider sc
 		pipelineMD += "\n\n```text\n" + buildPipelineAttestationWithPolicy(steps, rounds, sctx.Run.HeadSHA, policy) + "\n```"
 	}
 	testingMD = buildPRTestingSummary(steps, rounds, sctx.Repo.UpstreamURL, sctx.Run.HeadSHA, sctx.WorkDir, testEvidenceDir(sctx), publishRunEvidence(sctx), provider, s.attachRunEvidenceMedia(sctx, provider, steps, rounds), trailers...)
-	// The sections render a co-author's trailer key as a labelled field.
+	// The sections pass through the shared attribution display filter.
 	//
 	// This is their single source, so every publication path gets it: the
 	// ordinary body, the minimal and collapsed appendices, and a generated

@@ -1719,10 +1719,8 @@ func escapePipelineFoldMarkers(s string) string {
 
 // renderCoAuthorAsLabelledField delegates to the shared publication filter in
 // pr_coauthor_presentation.go. Raw PR-body scanners treat co-author trailers as
-// attribution even inside code fences, so preserved human entries need a
-// labelled key while their names and addresses remain visible as evidence.
-// prDisplayNoticeText owns AI neutralization and human presentation; a sentence
-// that merely names the field stays the sentence it was.
+// attribution even inside code fences. prDisplayNoticeText applies the shared
+// display rules, including their human-prose preservation exceptions.
 func renderCoAuthorAsLabelledField(s string) string {
 	return prDisplayNoticeText(s)
 }
