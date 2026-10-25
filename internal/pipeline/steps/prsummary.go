@@ -1760,6 +1760,11 @@ func renderInlineCoAuthorKeys(s string, notice bool, configuredTrailers ...strin
 				continue
 			}
 			identity := strings.TrimRight(value, " \t\r.,;:!?\"')]}”’")
+			var closingWrapper strings.Builder
+			for at := len(prefix) - 1; at >= 0 && strings.ContainsRune("*_~", rune(prefix[at])); at-- {
+				closingWrapper.WriteByte(prefix[at])
+			}
+			identity = strings.TrimSuffix(identity, closingWrapper.String())
 			claim := "Co-Authored-By: " + identity
 			_, _, _, ai := publishedAttributionEntry([]string{claim}, 0, configuredTrailers)
 			name, _, complete := strings.Cut(strings.TrimSpace(identity), "<")
