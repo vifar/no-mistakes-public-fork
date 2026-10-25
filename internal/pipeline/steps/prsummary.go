@@ -1754,7 +1754,6 @@ func renderInlineCoAuthorKeys(s string, notice bool, configuredTrailers ...strin
 				continue
 			}
 			end := keyEnd + width
-			sep := line[keyEnd:end]
 			inCode := false
 			for _, span := range spans {
 				if start >= span[0] && start < span[1] {
@@ -1783,7 +1782,7 @@ func renderInlineCoAuthorKeys(s string, notice bool, configuredTrailers ...strin
 				wrappers = wrappers[width:]
 			}
 			identity := value
-			if strings.TrimSpace(sep) == ":" {
+			if strings.TrimSpace(separator) == ":" {
 				identity = strings.TrimSpace(strings.TrimPrefix(identity, closing))
 			}
 			identity = strings.TrimRight(identity, " \t\r.,;:!?\"')]}”’")
@@ -1803,7 +1802,7 @@ func renderInlineCoAuthorKeys(s string, notice bool, configuredTrailers ...strin
 			if ai {
 				_, identity, _ = strings.Cut(unfolded, ":")
 				identity = strings.TrimSpace(identity)
-			} else if opening != "" || strings.ContainsAny(sep, "*_~<>&") || strings.HasPrefix(formattedValue, "<code>") || strings.TrimLeft(formattedValue, "*_~") != formattedValue {
+			} else if opening != "" || strings.ContainsAny(separator, "*_~<>") || strings.HasPrefix(formattedValue, "<code>") || strings.TrimLeft(formattedValue, "*_~") != formattedValue {
 				continue
 			}
 			name, _, complete := strings.Cut(strings.TrimSpace(identity), "<")
@@ -1832,7 +1831,7 @@ func renderInlineCoAuthorKeys(s string, notice bool, configuredTrailers ...strin
 				}
 				line = line[:start] + replacement + line[end+cut:]
 			} else {
-				line = line[:start] + "co-author (quoted)" + sep + line[end:]
+				line = line[:start] + presentHumanCoauthor(line[start:])
 			}
 		}
 		lines[i] = line

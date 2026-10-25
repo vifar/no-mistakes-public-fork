@@ -110,6 +110,7 @@ func TestPRPairedFormattedHumanAndAIInlinePublication(t *testing.T) {
 			}{
 				{"Ada", "ada@example.com", false},
 				{"Codex", "ai@example.com", true},
+				{"Codex", "bot@example.invalid", true},
 				{"Example, Inc. Bot", "opaque@example.com", true},
 			} {
 				for _, encode := range []func(string) string{
@@ -125,34 +126,45 @@ func TestPRPairedFormattedHumanAndAIInlinePublication(t *testing.T) {
 						return strings.NewReplacer("&lt;code&gt;", "&#X003C;code&#00062;", "&lt;/code&gt;", "&lt;/code&#x003E;").Replace(html.EscapeString(value))
 					},
 				} {
-					for _, prefix := range []string{"Recorded risk ", "Recorded "} {
-						claim := layout.open + layout.key + " " + layout.value + identity.name + " <" + identity.email + ">" + layout.close
-						claim = encode(claim)
-						raw := prefix + claim + suffix
-						for _, notice := range []bool{false, true} {
-							want := raw
-							if identity.ai {
-								replacement := ""
-								if notice {
-									replacement = prAIAttributionNotice
+					for _, separatorEncoding := range [][3]string{
+						{":", "", " "},
+						{":", " ", " "},
+						{":", "&#32;", " "},
+						{":", "&#x20;", " "},
+						{"&#58;", "", " "},
+						{"&#x3a;", "", " "},
+						{"&#58;", "&#32;", "&#9;"},
+						{"&#x3A;", "&#x20;", "&#x09;"},
+					} {
+						for _, prefix := range []string{"Recorded risk ", "Recorded "} {
+							key := strings.ReplaceAll(encode(layout.key), ":", separatorEncoding[0]+separatorEncoding[1])
+							claim := encode(layout.open) + key + separatorEncoding[2] + encode(layout.value+identity.name+" <"+identity.email+">"+layout.close)
+							raw := prefix + claim + suffix
+							for _, notice := range []bool{false, true} {
+								want := raw
+								if identity.ai {
+									replacement := ""
+									if notice {
+										replacement = prAIAttributionNotice
+									}
+									want = prefix + encode(layout.open) + replacement + encode(layout.close) + suffix
+								} else if layout.open == "" && layout.value == "" && separatorEncoding[0] == ":" {
+									want = strings.Replace(raw, "Co-Authored-By", "co-author (quoted)", 1)
 								}
-								want = prefix + encode(layout.open) + replacement + encode(layout.close) + suffix
-							} else if layout.open == "" && layout.value == "" {
-								want = strings.Replace(raw, "Co-Authored-By:", "co-author (quoted):", 1)
-							}
-							for _, recorded := range []bool{false, true} {
-								input, expected := raw, want
-								if recorded {
-									const tail = `, "escape":"A\u0042\/C", "number":1.200e+3}`
-									input = `{"summary":` + strconv.Quote(raw) + tail
-									expected = `{"summary":` + strconv.Quote(want) + tail
-								}
-								got := prDisplayTextMode(input, notice, "Co-Authored-By: Example, Inc. Bot <opaque@example.com>")
-								if recorded && !json.Valid([]byte(got)) {
-									t.Errorf("published invalid JSON: %q", got)
-								}
-								if got != expected {
-									t.Errorf("notice=%t recorded=%t input=%q: got %q, want %q", notice, recorded, input, got, expected)
+								for _, recorded := range []bool{false, true} {
+									input, expected := raw, want
+									if recorded {
+										const tail = `, "escape":"A\u0042\/C", "number":1.200e+3}`
+										input = `{"summary":` + strconv.Quote(raw) + tail
+										expected = `{"summary":` + strconv.Quote(want) + tail
+									}
+									got := prDisplayTextMode(input, notice, "Co-Authored-By: Example, Inc. Bot <opaque@example.com>")
+									if recorded && !json.Valid([]byte(got)) {
+										t.Errorf("published invalid JSON: %q", got)
+									}
+									if got != expected {
+										t.Errorf("notice=%t recorded=%t input=%q: got %q, want %q", notice, recorded, input, got, expected)
+									}
 								}
 							}
 						}
