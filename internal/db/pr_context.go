@@ -380,7 +380,8 @@ func (d *DB) RefreshRunPRForgeHead(runID string, expected PRContext, head string
 			return err
 		}
 		if pending != nil {
-			if pending.ForgeHeadSHA == nil || *pending.ForgeHeadSHA != expected.ForgeHeadSHA || pending.Generation != expected.Generation {
+			if pending.ForgeHeadSHA == nil || *pending.ForgeHeadSHA != expected.ForgeHeadSHA ||
+				pending.LocalHeadSHA != expected.LocalHeadSHA || pending.TargetSHA != expected.TargetSHA {
 				return fmt.Errorf("pending rewind changed while refreshing forge head")
 			}
 			if _, err = tx.ExecContext(ctx, `UPDATE run_target_rewinds SET forge_head_sha=? WHERE id=?`, head, pending.ID); err != nil {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -302,4 +303,204 @@ func foreignForgeHead(t *testing.T, c *pipeline.StepContext) string {
 	head := gitCmd(t, c.WorkDir, "rev-parse", "HEAD")
 	gitCmd(t, c.WorkDir, "checkout", "feature")
 	return head
+}
+
+func accountedRewindFixture(t *testing.T) (*pipeline.StepContext, pipeline.PRTargetSelection) {
+	t.Helper()
+	c, selected := rewindFixture(t)
+	remote := c.Repo.UpstreamURL
+	c.Repo.UpstreamURL = "https://github.com/test/repo"
+	gitCmd(t, c.WorkDir, "config", "url."+remote+".insteadOf", c.Repo.UpstreamURL)
+	selected.PRURL = "https://github.com/test/repo/pull/42"
+	selected.SourceRepo, selected.SourceBranch = "test/repo", "feature"
+	selected.ForgeHeadSHA = c.Run.BaseSHA
+	if _, err := guardPRContextWithSelection(c, types.StepRebase, selected, false); err != nil {
+		t.Fatal(err)
+	}
+	c.PRTarget = &selected
+	setAccountedForgeFacts(t, c, selected)
+	return c, selected
+}
+
+func setAccountedForgeFacts(t *testing.T, c *pipeline.StepContext, selected pipeline.PRTargetSelection) {
+	t.Helper()
+	bin := fakeCLIBinDir(t)
+	linkTestBinary(t, bin, "gh")
+	facts := fmt.Sprintf(`{"number":42,"html_url":%q,"state":"open","head":{"ref":%q,"sha":%q,"repo":{"full_name":%q}},"base":{"ref":%q}}`, selected.PRURL, selected.SourceBranch, selected.ForgeHeadSHA, selected.SourceRepo, selected.TargetBranch)
+	c.Env = fakeCLIEnv(bin, map[string]string{"FAKE_CLI_MODE": "ci-gh-reconcile", "FAKE_CLI_PR_FACTS_JSON": facts})
+}
+
+func TestAccountedForgeHeadAfterRebaseKeepsBothLocalProofs(t *testing.T) {
+	for _, pending := range []bool{false, true} {
+		for _, observation := range []string{"pinned", "rebased", "foreign"} {
+			t.Run(fmt.Sprintf("pending=%t/%s", pending, observation), func(t *testing.T) {
+				c, selected := accountedRewindFixture(t)
+				original := c.Run.HeadSHA
+				foreign := foreignForgeHead(t, c)
+				target := advanceRewindTarget(t, c)
+				if pending {
+					if decision, err := GuardPRContext(c, types.StepTest); err != nil || decision.RestartFrom != types.StepRebase {
+						t.Fatalf("classify rewind: %+v %v", decision, err)
+					}
+					if out, err := (&RebaseStep{}).Execute(c); err != nil || out == nil || out.NeedsApproval {
+						t.Fatalf("integrate rewind: %+v %v", out, err)
+					}
+				} else {
+					gitCmd(t, c.WorkDir, "rebase", target)
+					c.Run.HeadSHA = gitCmd(t, c.WorkDir, "rev-parse", "HEAD")
+					if err := c.DB.UpdateRunHeadSHA(c.Run.ID, c.Run.HeadSHA); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if isAncestor(c.Ctx, c.WorkDir, original, c.Run.HeadSHA) {
+					t.Fatal("fixture must rewrite the pinned local head")
+				}
+				selected.ForgeHeadSHA = map[string]string{"pinned": original, "rebased": c.Run.HeadSHA, "foreign": foreign}[observation]
+				setAccountedForgeFacts(t, c, selected)
+				before, err := c.DB.GetRunPRContext(c.Run.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				c.PRContextAfterStep, c.PRContextRebaseCompleted = true, true
+				decision, err := GuardPRContext(c, types.StepRebase)
+				after, readErr := c.DB.GetRunPRContext(c.Run.ID)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				t.Logf("post-rebase pinned=%s observed=%s pinned-local=%s local=%s generation=%d->%d decision=%+v err=%v", before.ForgeHeadSHA, selected.ForgeHeadSHA, before.LocalHeadSHA, c.Run.HeadSHA, before.Generation, after.Generation, decision, err)
+				if observation == "foreign" {
+					if err == nil || !strings.Contains(err.Error(), "unaccounted pull request head") || after.PRContextCandidate != before.PRContextCandidate || after.Generation != before.Generation {
+						t.Fatalf("foreign head changed receipt: %+v %v", after, err)
+					}
+					return
+				}
+				if err != nil || after.LocalHeadSHA != c.Run.HeadSHA || after.ForgeHeadSHA != selected.ForgeHeadSHA {
+					t.Fatalf("accounted rewrite rejected: %+v %v", after, err)
+				}
+				if pending && decision.RestartFrom != "" || !pending && decision.RestartFrom != types.StepRebase {
+					t.Fatalf("unexpected comparison transition: %+v", decision)
+				}
+				p, err := c.DB.GetPendingTargetRewind(c.Run.ID)
+				if err != nil || (p != nil) != !pending {
+					t.Fatalf("pending=%+v err=%v", p, err)
+				}
+			})
+		}
+	}
+}
+
+func TestAccountedForgeHeadCatchUpAtRewindIntegration(t *testing.T) {
+	for _, strategy := range []string{config.RebaseStrategyRebase, config.RebaseStrategyMerge} {
+		for _, fixing := range []bool{false, true} {
+			for _, drift := range []string{"catch-up", "foreign", "source", "base", "remote source"} {
+				t.Run(fmt.Sprintf("%s/fixing=%t/%s", strategy, fixing, drift), func(t *testing.T) {
+					c, selected := accountedRewindFixture(t)
+					c.Config.Rebase.Strategy = strategy
+					target := advanceRewindTarget(t, c)
+					if _, err := GuardPRContext(c, types.StepTest); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := GuardPRContext(c, types.StepRebase); err != nil {
+						t.Fatal(err)
+					}
+					before, err := c.DB.GetRunPRContext(c.Run.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					selected.ForgeHeadSHA = c.Run.HeadSHA
+					switch drift {
+					case "foreign":
+						selected.ForgeHeadSHA = foreignForgeHead(t, c)
+					case "source":
+						selected.SourceBranch = "other"
+					case "base":
+						selected.TargetBranch = "other"
+						gitCmd(t, c.WorkDir, "push", "origin", "main:other")
+					case "remote source":
+						foreign := foreignForgeHead(t, c)
+						gitCmd(t, c.WorkDir, "push", "--force", "origin", foreign+":feature")
+					}
+					setAccountedForgeFacts(t, c, selected)
+					c.Fixing = fixing
+					out, err := (&RebaseStep{}).Execute(c)
+					after, readErr := c.DB.GetRunPRContext(c.Run.ID)
+					if readErr != nil {
+						t.Fatal(readErr)
+					}
+					t.Logf("integration pinned=%s observed=%s local=%s generation=%d->%d outcome=%+v err=%v", before.ForgeHeadSHA, selected.ForgeHeadSHA, before.LocalHeadSHA, before.Generation, after.Generation, out, err)
+					if drift != "catch-up" {
+						cause := map[string]string{
+							"foreign":       "unaccounted pull request head",
+							"source":        "on other differs",
+							"base":          "local head or PR identity changed during pending rewind",
+							"remote source": "remote source changed during pending rewind",
+						}[drift]
+						if err == nil || !strings.Contains(err.Error(), cause) || gitCmd(t, c.WorkDir, "rev-parse", "HEAD") != before.LocalHeadSHA {
+							t.Fatalf("unsafe integration accepted: %+v %v", out, err)
+						}
+						return
+					}
+					if err != nil || out == nil || out.NeedsApproval || after.Generation != before.Generation || after.ForgeHeadSHA != selected.ForgeHeadSHA {
+						t.Fatalf("accounted catch-up refused: %+v %+v %v", out, after, err)
+					}
+					gitCmd(t, c.WorkDir, "merge-base", "--is-ancestor", target, "HEAD")
+					p, err := c.DB.GetPendingTargetRewind(c.Run.ID)
+					if err != nil || p == nil || p.ForgeHeadSHA == nil || *p.ForgeHeadSHA != selected.ForgeHeadSHA || p.Generation != before.Generation {
+						t.Fatalf("pending observation=%+v %v", p, err)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestAccountedForgeHeadRewindAfterLeftoverCommit(t *testing.T) {
+	for _, strategy := range []string{config.RebaseStrategyRebase, config.RebaseStrategyMerge} {
+		for _, refreshAt := range []string{"integration", "completion"} {
+			t.Run(strategy+"/"+refreshAt, func(t *testing.T) {
+				c, selected := accountedRewindFixture(t)
+				c.Config.Rebase.Strategy = strategy
+				target := advanceRewindTarget(t, c)
+				if _, err := GuardPRContext(c, types.StepTest); err != nil {
+					t.Fatal(err)
+				}
+				p, err := c.DB.GetPendingTargetRewind(c.Run.ID)
+				if err != nil || p == nil {
+					t.Fatalf("pending=%+v %v", p, err)
+				}
+				selected.ForgeHeadSHA = c.Run.HeadSHA
+				if refreshAt == "integration" {
+					setAccountedForgeFacts(t, c, selected)
+				}
+				if err := os.WriteFile(filepath.Join(c.WorkDir, "feature.txt"), []byte("preserved validation edit\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if out, err := (&RebaseStep{}).Execute(c); err != nil || out == nil || out.NeedsApproval {
+					t.Fatalf("leftover integration: %+v %v", out, err)
+				}
+				before, err := c.DB.GetRunPRContext(c.Run.ID)
+				if err != nil || before.Generation != p.Generation+1 {
+					t.Fatalf("leftover did not advance receipt: %+v %v", before, err)
+				}
+				setAccountedForgeFacts(t, c, selected)
+				c.PRContextAfterStep, c.PRContextRebaseCompleted = true, true
+				decision, err := GuardPRContext(c, types.StepRebase)
+				after, readErr := c.DB.GetRunPRContext(c.Run.ID)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				t.Logf("leftover pinned=%s observed=%s pinned-local=%s local=%s pending-generation=%d receipt=%d->%d decision=%+v err=%v", before.ForgeHeadSHA, selected.ForgeHeadSHA, before.LocalHeadSHA, c.Run.HeadSHA, p.Generation, before.Generation, after.Generation, decision, err)
+				if err != nil || decision.RestartFrom != "" || after.ForgeHeadSHA != selected.ForgeHeadSHA || after.LocalHeadSHA != c.Run.HeadSHA {
+					t.Fatalf("leftover completion: %+v %+v %v", after, decision, err)
+				}
+				if p, err := c.DB.GetPendingTargetRewind(c.Run.ID); err != nil || p != nil {
+					t.Fatalf("pending=%+v %v", p, err)
+				}
+				if got := gitCmd(t, c.WorkDir, "show", "HEAD:feature.txt"); got != "preserved validation edit" {
+					t.Fatalf("validation edit lost: %q", got)
+				}
+				gitCmd(t, c.WorkDir, "merge-base", "--is-ancestor", target, "HEAD")
+			})
+		}
+	}
 }

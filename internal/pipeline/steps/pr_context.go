@@ -335,7 +335,10 @@ func reconcileAccountedForgeHead(sctx *pipeline.StepContext, previous *db.PRCont
 	if !samePRContextIdentity(previous, candidate) {
 		return nil, fmt.Errorf("pull request identity, source, or target changed alongside forge head")
 	}
-	accounted, err := runAccountsForPRHead(sctx, candidate.ForgeHeadSHA, trustedHead)
+	accounted, err := runAccountsForPRHead(sctx, candidate.ForgeHeadSHA, previous.LocalHeadSHA)
+	if err == nil && !accounted && trustedHead != previous.LocalHeadSHA {
+		accounted, err = runAccountsForPRHead(sctx, candidate.ForgeHeadSHA, trustedHead)
+	}
 	if err != nil {
 		return nil, err
 	}

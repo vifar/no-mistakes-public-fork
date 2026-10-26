@@ -359,6 +359,19 @@ func checkedRewindTargets(c *pipeline.StepContext, targets []string) (checked []
 	if previous.SourceBranch == candidate.SourceBranch && scm.SameSourceRepository(resolvedProvider(c), previous.SourceRepo, candidate.SourceRepo) {
 		candidate.SourceRepo = previous.SourceRepo
 	}
+	if (selected.State == "" || selected.State == scm.PRStateOpen) && samePRContextIdentity(previous, candidate) {
+		previous, err = reconcileAccountedForgeHead(c, previous, candidate, previous.LocalHeadSHA)
+		if err != nil {
+			return nil, cleanup, err
+		}
+		pending, err = c.DB.GetPendingTargetRewind(c.Run.ID)
+		if err != nil {
+			return nil, cleanup, err
+		}
+		if pending == nil {
+			return nil, cleanup, fmt.Errorf("pending rewind changed while checking integration")
+		}
+	}
 	if head != c.Run.HeadSHA || head != previous.LocalHeadSHA || head != pending.LocalHeadSHA || !samePendingRewindIdentity(c, pending, previous, candidate, selected) {
 		return nil, cleanup, fmt.Errorf("local head or PR identity changed during pending rewind")
 	}
