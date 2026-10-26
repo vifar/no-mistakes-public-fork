@@ -477,7 +477,9 @@ func TestTerminalMaintenanceProbeShutdownLiveJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	entered := filepath.Join(h.NMHome, "shutdown-probe-entered")
-	shim := "#!/bin/sh\nif [ \"$*\" = " + shellQuote("-p "+strconv.Itoa(pid)+" -o stat=") + " ]; then\n  echo $$ > " + shellQuote(entered) + "\n  exec sleep 30\nfi\nexec " + shellQuote(realPS) + " \"$@\"\n"
+	// Publish readiness only after the PID is complete; redirection creates an
+	// empty file before echo writes, which a concurrent reader can observe.
+	shim := "#!/bin/sh\nif [ \"$*\" = " + shellQuote("-p "+strconv.Itoa(pid)+" -o stat=") + " ]; then\n  echo $$ > " + shellQuote(entered+".tmp") + "\n  mv " + shellQuote(entered+".tmp") + " " + shellQuote(entered) + "\n  exec sleep 30\nfi\nexec " + shellQuote(realPS) + " \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(h.BinDir, "ps"), []byte(shim), 0700); err != nil {
 		t.Fatal(err)
 	}
