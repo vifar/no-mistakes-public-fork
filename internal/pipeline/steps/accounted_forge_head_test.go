@@ -529,7 +529,7 @@ func TestAccountedForgeHeadCatchUpAfterSuccessfulPostRebaseGuard(t *testing.T) {
 			if err != nil || between.LocalHeadSHA != c.Run.HeadSHA || between.ForgeHeadSHA != selected.ForgeHeadSHA {
 				t.Fatalf("post-rebase receipt: %+v %v", between, err)
 			}
-			if !strings.Contains(between.PinnedLocalHeads, original) {
+			if between.PinnedLocalHeadSHA != original {
 				t.Fatalf("pinned proof not retained: %+v", between)
 			}
 			selected.ForgeHeadSHA = map[string]string{"pinned": original, "foreign": foreign}[observation]
@@ -553,7 +553,7 @@ func TestAccountedForgeHeadCatchUpAfterSuccessfulPostRebaseGuard(t *testing.T) {
 	}
 }
 
-func TestAccountedForgeHeadCatchUpToIntermediateCorrectionAfterRebase(t *testing.T) {
+func TestAccountedForgeHeadIntermediateCorrectionAfterRebaseIsRefusedWithoutHeadHistory(t *testing.T) {
 	c, selected := accountedRewindFixture(t)
 	original := c.Run.HeadSHA
 	gitCmd(t, c.WorkDir, "commit", "--allow-empty", "-m", "Review fix")
@@ -595,8 +595,54 @@ func TestAccountedForgeHeadCatchUpToIntermediateCorrectionAfterRebase(t *testing
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
-	t.Logf("intermediate catch-up pinned=%s observed=%s proofs=%q local=%s generation=%d->%d err=%v", between.ForgeHeadSHA, correction, between.PinnedLocalHeads, rebased, between.Generation, after.Generation, err)
-	if err != nil || after.ForgeHeadSHA != correction || after.Generation != between.Generation {
-		t.Fatalf("intermediate catch-up rejected: %+v %v", after, err)
+	t.Logf("intermediate catch-up pinned=%s observed=%s proof=%q local=%s generation=%d->%d err=%v", between.ForgeHeadSHA, correction, between.PinnedLocalHeadSHA, rebased, between.Generation, after.Generation, err)
+	if err == nil || after.ForgeHeadSHA != between.ForgeHeadSHA || after.Generation != between.Generation {
+		t.Fatalf("intermediate head outside the single pinned proof changed the receipt: %+v %v", after, err)
 	}
+}
+
+func TestAccountedForgeHeadRefusedTransitionDoesNotPersistForgeObservation(t *testing.T) {
+	t.Run("core guard", func(t *testing.T) {
+		c, selected := rewindFixture(t)
+		selected.PRURL = "https://github.com/test/repo/pull/42"
+		selected.SourceRepo, selected.SourceBranch = "test/repo", "feature"
+		selected.ForgeHeadSHA = c.Run.BaseSHA
+		if _, err := guardPRContextWithSelection(c, types.StepRebase, selected, false); err != nil {
+			t.Fatal(err)
+		}
+		observed := c.Run.HeadSHA
+		gitCmd(t, c.WorkDir, "commit", "--allow-empty", "-m", "unattributed local edit")
+		c.Run.HeadSHA = gitCmd(t, c.WorkDir, "rev-parse", "HEAD")
+		if err := c.DB.UpdateRunHeadSHA(c.Run.ID, c.Run.HeadSHA); err != nil {
+			t.Fatal(err)
+		}
+		selected.ForgeHeadSHA = observed
+		before, _ := c.DB.GetRunPRContext(c.Run.ID)
+		for i := 0; i < 2; i++ {
+			_, err := guardPRContextWithSelection(c, types.StepTest, selected, false)
+			after, _ := c.DB.GetRunPRContext(c.Run.ID)
+			t.Logf("attempt %d pinned=%s observed=%s local=%s generation=%d->%d forge-now=%s err=%v", i, before.ForgeHeadSHA, observed, c.Run.HeadSHA, before.Generation, after.Generation, after.ForgeHeadSHA, err)
+			if err == nil || after.ForgeHeadSHA != before.ForgeHeadSHA || after.Generation != before.Generation {
+				t.Fatalf("refused transition changed the receipt: %+v %v", after, err)
+			}
+		}
+	})
+	t.Run("attestation", func(t *testing.T) {
+		c, h, pr := mutationComparisonFixture(t)
+		receipt, _ := c.DB.GetRunPRContext(c.Run.ID)
+		stale := receipt.PRContextCandidate
+		stale.ForgeHeadSHA = c.Run.BaseSHA
+		if _, err := c.DB.BindRunPRContext(c.Run.ID, stale, types.StepRebase); err != nil {
+			t.Fatal(err)
+		}
+		before, _ := c.DB.GetRunPRContext(c.Run.ID)
+		for i := 0; i < 2; i++ {
+			err := verifyPRMutationComparison(c, h, pr, c.Run.BaseSHA, true)
+			after, _ := c.DB.GetRunPRContext(c.Run.ID)
+			t.Logf("attempt %d pinned=%s observed=%s local=%s generation=%d->%d forge-now=%s err=%v", i, before.ForgeHeadSHA, h.facts.HeadSHA, c.Run.HeadSHA, before.Generation, after.Generation, after.ForgeHeadSHA, err)
+			if err == nil || after.ForgeHeadSHA != before.ForgeHeadSHA || after.Generation != before.Generation {
+				t.Fatalf("refused attestation changed the receipt: %+v %v", after, err)
+			}
+		}
+	})
 }

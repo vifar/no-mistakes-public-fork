@@ -135,6 +135,7 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 				return nil, err
 			}
 			if receipt != nil {
+				undoRefresh := func() error { return nil }
 				if selected := sctx.PRTarget; selected != nil && selected.ForgeHeadSHA != "" {
 					observed := receipt.PRContextCandidate
 					observed.PRURL, observed.SourceBranch, observed.TargetBranch = selected.PRURL, selected.SourceBranch, selected.TargetBranch
@@ -142,18 +143,18 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 						observed.SourceRepo = selected.SourceRepo
 					}
 					observed.ForgeHeadSHA = selected.ForgeHeadSHA
-					receipt, err = reconcileAccountedForgeHead(sctx, receipt, observed, headSHA)
+					receipt, undoRefresh, err = reconcileAccountedForgeHead(sctx, receipt, observed, headSHA)
 					if err != nil {
 						return nil, err
 					}
 				}
 				own, err := prComparisonAtTarget(sctx, receipt.TargetBranch, receipt.TargetSHA, headSHA)
-				if err != nil {
-					return nil, err
+				if err == nil {
+					own.PRURL, own.SourceRepo, own.SourceBranch, own.ForgeHeadSHA = receipt.PRURL, receipt.SourceRepo, receipt.SourceBranch, receipt.ForgeHeadSHA
+					_, err = sctx.DB.AdvanceRunPRContext(sctx.Run.ID, own)
 				}
-				own.PRURL, own.SourceRepo, own.SourceBranch, own.ForgeHeadSHA = receipt.PRURL, receipt.SourceRepo, receipt.SourceBranch, receipt.ForgeHeadSHA
-				if _, err := sctx.DB.AdvanceRunPRContext(sctx.Run.ID, own); err != nil {
-					return nil, err
+				if err != nil {
+					return nil, errors.Join(err, undoRefresh())
 				}
 			}
 			newHeadSHA = headSHA

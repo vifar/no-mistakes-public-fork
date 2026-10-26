@@ -360,10 +360,16 @@ func checkedRewindTargets(c *pipeline.StepContext, targets []string) (checked []
 		candidate.SourceRepo = previous.SourceRepo
 	}
 	if (selected.State == "" || selected.State == scm.PRStateOpen) && samePRContextIdentity(previous, candidate) {
-		previous, err = reconcileAccountedForgeHead(c, previous, candidate, previous.LocalHeadSHA)
+		var undoRefresh func() error
+		previous, undoRefresh, err = reconcileAccountedForgeHead(c, previous, candidate, previous.LocalHeadSHA)
 		if err != nil {
 			return nil, cleanup, err
 		}
+		defer func() {
+			if err != nil {
+				err = errors.Join(err, undoRefresh())
+			}
+		}()
 		pending, err = c.DB.GetPendingTargetRewind(c.Run.ID)
 		if err != nil {
 			return nil, cleanup, err

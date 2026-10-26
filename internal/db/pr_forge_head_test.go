@@ -183,7 +183,7 @@ func TestPinnedLocalHeadMigratesFromV8AndEmptyMeansNoProof(t *testing.T) {
 			t.Fatal(err)
 		}
 		got, err := d.GetRunPRContext(id)
-		if err != nil || got == nil || got.PRContextCandidate != candidate || got.PinnedLocalHeads != "" {
+		if err != nil || got == nil || got.PRContextCandidate != candidate || got.PinnedLocalHeadSHA != "" {
 			t.Fatalf("v%d row after upgrade: %+v %v", version, got, err)
 		}
 		moved := candidate
@@ -192,7 +192,7 @@ func TestPinnedLocalHeadMigratesFromV8AndEmptyMeansNoProof(t *testing.T) {
 			t.Fatalf("v%d bind after upgrade: %v", version, err)
 		}
 		got, err = d.GetRunPRContext(id)
-		if err != nil || got.PinnedLocalHeads != candidate.LocalHeadSHA {
+		if err != nil || got.PinnedLocalHeadSHA != candidate.LocalHeadSHA {
 			t.Fatalf("v%d pinned proof: %+v %v", version, got, err)
 		}
 		d.Close()
