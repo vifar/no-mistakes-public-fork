@@ -738,3 +738,71 @@ func TestAccountedForgeHeadCatchUpAfterRebaseAndSecondTargetAdvance(t *testing.T
 		t.Fatalf("pending observation stale after the receipt moved: %+v", pending)
 	}
 }
+
+func TestAccountedForgeHeadCorrectionWithRefusedTargetLeavesDurableStateUnchanged(t *testing.T) {
+	for _, kind := range []string{"exhausted budget", "rewritten target"} {
+		t.Run(kind, func(t *testing.T) {
+			c, selected := accountedRewindFixture(t)
+			original := c.Run.HeadSHA
+			gitCmd(t, c.WorkDir, "commit", "--allow-empty", "-m", "Review correction")
+			correction := gitCmd(t, c.WorkDir, "rev-parse", "HEAD")
+			if err := recordPipelineHeadRange(c, original, correction); err != nil {
+				t.Fatal(err)
+			}
+			c.Run.HeadSHA = correction
+			if err := c.DB.UpdateRunHeadSHA(c.Run.ID, correction); err != nil {
+				t.Fatal(err)
+			}
+			if kind == "exhausted budget" {
+				c.Config.Rebase.MaxTargetAdvanceRewinds = 0
+				advanceRewindTarget(t, c)
+			} else {
+				gitCmd(t, c.WorkDir, "checkout", "main")
+				gitCmd(t, c.WorkDir, "commit", "--amend", "--allow-empty", "-m", "rewritten target")
+				gitCmd(t, c.WorkDir, "push", "--force", "origin", "main")
+				gitCmd(t, c.WorkDir, "checkout", "feature")
+			}
+			before, _ := c.DB.GetRunPRContext(c.Run.ID)
+			pendingBefore, _ := c.DB.GetPendingTargetRewind(c.Run.ID)
+			selected.ForgeHeadSHA = correction
+			setAccountedForgeFacts(t, c, selected)
+			c.PRContextAfterStep = true
+			for i := 0; i < 2; i++ {
+				_, err := GuardPRContext(c, types.StepReview)
+				after, _ := c.DB.GetRunPRContext(c.Run.ID)
+				pendingAfter, _ := c.DB.GetPendingTargetRewind(c.Run.ID)
+				t.Logf("%s attempt %d pinned=%s observed=%s local=%s->%s pin=%q->%q generation=%d->%d err=%v", kind, i, before.ForgeHeadSHA, correction, before.LocalHeadSHA, after.LocalHeadSHA, before.PinnedLocalHeadSHA, after.PinnedLocalHeadSHA, before.Generation, after.Generation, err)
+				if err == nil || *after != *before || (pendingBefore == nil) != (pendingAfter == nil) {
+					t.Fatalf("refused correction changed durable state: %+v %v", after, err)
+				}
+			}
+		})
+	}
+}
+
+func TestAccountedForgeHeadCorrectionWithTargetAdvanceIsOneAcceptedTransition(t *testing.T) {
+	c, selected := accountedRewindFixture(t)
+	original := c.Run.HeadSHA
+	gitCmd(t, c.WorkDir, "commit", "--allow-empty", "-m", "Review correction")
+	correction := gitCmd(t, c.WorkDir, "rev-parse", "HEAD")
+	if err := recordPipelineHeadRange(c, original, correction); err != nil {
+		t.Fatal(err)
+	}
+	c.Run.HeadSHA = correction
+	if err := c.DB.UpdateRunHeadSHA(c.Run.ID, correction); err != nil {
+		t.Fatal(err)
+	}
+	advanceRewindTarget(t, c)
+	selected.ForgeHeadSHA = correction
+	setAccountedForgeFacts(t, c, selected)
+	c.PRContextAfterStep = true
+	before, _ := c.DB.GetRunPRContext(c.Run.ID)
+	decision, err := GuardPRContext(c, types.StepReview)
+	after, _ := c.DB.GetRunPRContext(c.Run.ID)
+	pending, _ := c.DB.GetPendingTargetRewind(c.Run.ID)
+	t.Logf("accepted pinned=%s observed=%s local=%s->%s generation=%d->%d decision=%+v err=%v", before.ForgeHeadSHA, correction, before.LocalHeadSHA, after.LocalHeadSHA, before.Generation, after.Generation, decision, err)
+	if err != nil || decision.RestartFrom != types.StepRebase || after.LocalHeadSHA != correction || after.ForgeHeadSHA != correction ||
+		pending == nil || pending.ForgeHeadSHA == nil || *pending.ForgeHeadSHA != correction || pending.LocalHeadSHA != correction {
+		t.Fatalf("receipt and pending did not move together: %+v %+v %v", after, pending, err)
+	}
+}

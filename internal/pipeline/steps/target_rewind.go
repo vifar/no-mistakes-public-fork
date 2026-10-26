@@ -127,12 +127,19 @@ func observeRewindBranch(c *pipeline.StepContext, remote, branch, privateRef str
 	return &sha, nil
 }
 
-func attributeTargetAdvanceHead(c *pipeline.StepContext, previous *db.PRContext, candidate db.PRContextCandidate) (*db.PRContext, error) {
+func validateTargetAdvanceHead(c *pipeline.StepContext, previous *db.PRContext, candidate db.PRContextCandidate) error {
 	if err := c.DB.ValidatePipelineHeadForward(c.Run.ID, previous.LocalHeadSHA, candidate.LocalHeadSHA); err != nil {
-		return nil, fmt.Errorf("target advance with unexplained local head: %w", err)
+		return fmt.Errorf("target advance with unexplained local head: %w", err)
 	}
 	if _, err := git.Run(c.Ctx, c.WorkDir, "merge-base", "--is-ancestor", previous.LocalHeadSHA, candidate.LocalHeadSHA); err != nil {
-		return nil, fmt.Errorf("target advance with non-descendant pipeline head: %w", err)
+		return fmt.Errorf("target advance with non-descendant pipeline head: %w", err)
+	}
+	return nil
+}
+
+func attributeTargetAdvanceHead(c *pipeline.StepContext, previous *db.PRContext, candidate db.PRContextCandidate) (*db.PRContext, error) {
+	if err := validateTargetAdvanceHead(c, previous, candidate); err != nil {
+		return nil, err
 	}
 	own, err := prComparisonAtTarget(c, previous.TargetBranch, previous.TargetSHA, candidate.LocalHeadSHA)
 	if err != nil {
@@ -181,18 +188,18 @@ func attributeRebasedHead(c *pipeline.StepContext, previous *db.PRContext, candi
 	return c.DB.GetRunPRContext(c.Run.ID)
 }
 
-func firstForgeRefresh(forge []*accountedForge) *db.ForgeRefresh {
-	if len(forge) == 0 || forge[0] == nil {
+func firstForgeRefresh(forge *accountedForge) *db.ForgeRefresh {
+	if forge == nil {
 		return nil
 	}
-	return &forge[0].options()[0]
+	return &forge.options()[0]
 }
 
-func classifyTargetAdvance(c *pipeline.StepContext, step types.StepName, selection pipeline.PRTargetSelection, previous *db.PRContext, candidate db.PRContextCandidate, source *string, forge ...*accountedForge) (db.PRContextBindResult, error) {
+func classifyTargetAdvance(c *pipeline.StepContext, step types.StepName, selection pipeline.PRTargetSelection, previous *db.PRContext, candidate db.PRContextCandidate, source *string, forge *accountedForge, acceptLocal bool) (db.PRContextBindResult, error) {
 	refusal := func(cause error) (db.PRContextBindResult, error) {
 		return db.PRContextBindResult{}, fmt.Errorf("PR comparison changed after rebase; start a new run for the current target and head: %w", cause)
 	}
-	if previous == nil || !sameRewindIdentity(previous, candidate) || candidate.LocalHeadSHA != c.Run.HeadSHA || candidate.LocalHeadSHA != previous.LocalHeadSHA || previous.TargetSHA == candidate.TargetSHA {
+	if previous == nil || !sameRewindIdentity(previous, candidate) || candidate.LocalHeadSHA != c.Run.HeadSHA || (candidate.LocalHeadSHA != previous.LocalHeadSHA && !acceptLocal) || previous.TargetSHA == candidate.TargetSHA {
 		return refusal(fmt.Errorf("%w: PR identity or local head differs from the recorded comparison", db.ErrTargetAdvanceIneligible))
 	}
 	if _, err := git.Run(c.Ctx, c.WorkDir, "merge-base", "--is-ancestor", previous.TargetSHA, candidate.TargetSHA); err != nil {
@@ -204,7 +211,7 @@ func classifyTargetAdvance(c *pipeline.StepContext, step types.StepName, selecti
 	}
 	result, err := c.DB.RewindRunPRContext(c.Run.ID, candidate, db.TargetAdvanceRewindRequest{
 		ExpectedGeneration: previous.Generation, Step: step, MaxRewinds: maxRewinds, SourceSHA: source, HasPR: selection.ForgeHeadSHA != "", ObservedPRURL: selection.ObservedPRURL, ObservedForgeHeadSHA: selection.ForgeHeadSHA,
-		ForgeRefresh: firstForgeRefresh(forge),
+		ForgeRefresh: firstForgeRefresh(forge), AcceptLocalAdvance: acceptLocal,
 	})
 	if err != nil {
 		return refusal(err)
@@ -307,13 +314,13 @@ func detectTargetAdvanceAtPublication(c *pipeline.StepContext, step types.StepNa
 	if candidate.TargetSHA == previous.TargetSHA {
 		return false, nil
 	}
-	if candidate.LocalHeadSHA != previous.LocalHeadSHA {
-		previous, err = attributeTargetAdvanceHead(c, previous, candidate)
-		if err != nil {
+	moved := candidate.LocalHeadSHA != previous.LocalHeadSHA
+	if moved {
+		if err := validateTargetAdvanceHead(c, previous, candidate); err != nil {
 			return false, err
 		}
 	}
-	if _, err := classifyTargetAdvance(c, step, selection, previous, candidate, observed.source); err != nil {
+	if _, err := classifyTargetAdvance(c, step, selection, previous, candidate, observed.source, nil, moved); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -384,7 +391,7 @@ func checkedRewindTargets(c *pipeline.StepContext, targets []string) (checked []
 	}
 	classified := candidate.TargetSHA != previous.TargetSHA
 	if classified {
-		if _, err = classifyTargetAdvance(c, types.StepRebase, selected, previous, candidate, observed.source, forge); err != nil {
+		if _, err = classifyTargetAdvance(c, types.StepRebase, selected, previous, candidate, observed.source, forge, false); err != nil {
 			return nil, cleanup, err
 		}
 		// The old conflict selection and fix budget belong to the discarded

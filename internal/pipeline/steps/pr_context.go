@@ -559,37 +559,43 @@ func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName
 	// A completed fix can move HEAD in the same window as a target advance.
 	// Attribute that movement before classifying drift, using the commit edges
 	// recorded by commitChanges, never mutable runs.head_sha alone.
+	classifies := targetChanged && !(freshRetarget && previous.TargetBranch != candidate.TargetBranch) && eligible
+	acceptLocal := false
 	if targetChanged && eligible && previous.LocalHeadSHA != candidate.LocalHeadSHA &&
 		sctx.PRContextAfterStep && step.Order() >= types.StepReview.Order() && step.Order() <= types.StepPush.Order() &&
 		sameRewindIdentity(previous, candidate) && candidate.LocalHeadSHA == sctx.Run.HeadSHA {
-		previous, err = attributeTargetAdvanceHead(sctx, forge.stored(previous), candidate)
-		if err != nil {
-			return pipeline.PRContextDecision{}, err
+		if classifies {
+			if err := validateTargetAdvanceHead(sctx, previous, candidate); err != nil {
+				return pipeline.PRContextDecision{}, err
+			}
+			acceptLocal = true
+		} else {
+			previous, err = attributeTargetAdvanceHead(sctx, forge.stored(previous), candidate)
+			if err != nil {
+				return pipeline.PRContextDecision{}, err
+			}
+			previous = forge.overlay(previous)
 		}
-		previous = forge.overlay(previous)
 	}
 	// A completed REBASE also moves HEAD in the same window, and it REWRITES
-	// the head rather than extending it: the same logical changes land on a
-	// new base, so the new head is not a descendant of the one the receipt
-	// names. The proof above cannot apply - it is an ancestry proof, and it
-	// requires the recorded commit edges a fix round leaves behind.
-	//
-	// The proof here is the run's OWN record: the Rebase step completed, and
-	// the head it produced is the run's head. The PR identity, the target and
-	// the source must be unchanged, so only the head the run itself rewrote is
-	// accepted, and the receipt follows it instead of the run refusing its
-	// own rebase as an unexplained comparison change.
+	// the head rather than extending it, so only the run's own record proves
+	// it: the Rebase step completed and the head it produced is the run's
+	// head, with PR identity, target and source unchanged.
 	if targetChanged && eligible && previous.LocalHeadSHA != candidate.LocalHeadSHA &&
 		sctx.PRContextAfterStep && step == types.StepRebase && sctx.PRContextRebaseCompleted &&
 		sameRewindIdentity(previous, candidate) && candidate.LocalHeadSHA == sctx.Run.HeadSHA {
-		previous, err = attributeRebasedHead(sctx, forge.stored(previous), candidate)
-		if err != nil {
-			return pipeline.PRContextDecision{}, err
+		if classifies {
+			acceptLocal = true
+		} else {
+			previous, err = attributeRebasedHead(sctx, forge.stored(previous), candidate)
+			if err != nil {
+				return pipeline.PRContextDecision{}, err
+			}
+			previous = forge.overlay(previous)
 		}
-		previous = forge.overlay(previous)
 	}
-	if targetChanged && !(freshRetarget && previous.TargetBranch != candidate.TargetBranch) && eligible {
-		_, bindErr := classifyTargetAdvance(sctx, step, selection, previous, candidate, observedSource, forge)
+	if classifies {
+		_, bindErr := classifyTargetAdvance(sctx, step, selection, previous, candidate, observedSource, forge, acceptLocal)
 		if bindErr != nil {
 			return pipeline.PRContextDecision{}, bindErr
 		}
