@@ -866,12 +866,15 @@ func verifyCurrentPRComparison(sctx *pipeline.StepContext, host scm.Host, select
 // run last compared it (#161, #237). Other merges can land between this run's
 // last check and its own, so the forge merges the reviewed head onto a newer
 // target than the receipt names. The merge commit's first parent IS that
-// target as the forge saw it. The proof holds only when that parent is a pure
-// advance of the reviewed target for the reviewed head (fast-forward,
-// unchanged merge base, clean merge) and merging the reviewed head onto it
-// reproduces the merge commit's tree exactly - so the commit that landed is
-// the reviewed change and nothing else. A merge commit without that parent
-// shape (a rebase merge's last replayed commit, for one) fails closed.
+// target as the forge saw it. Only on-conflict permits this fallback. The
+// parent must purely advance the latest retained target (or the reviewed
+// target without one): fast-forward, unchanged merge base, clean merge.
+// The forward merge must reproduce the result tree, and reversing the
+// reviewed change out of that result must reproduce the parent's tree.
+// Both are necessary: the reverse proof rejects partial replays without
+// requiring identical diff blob IDs or context after clean target edits.
+// A merge commit without that parent shape (a rebase merge's last replayed
+// commit, for one) fails closed.
 func mergedOntoAdvancedTarget(sctx *pipeline.StepContext, receipt *db.PRContext, mergeSHA, actualTree string) (bool, error) {
 	if !keepsCleanHeads(sctx) {
 		return false, nil
