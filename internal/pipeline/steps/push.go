@@ -61,7 +61,6 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	}
 	ctx := sctx.Ctx
 	newHeadSHA := ""
-	var bindOwnHead func() error
 	if err := sctx.DB.SetRunPushActive(sctx.Run.ID, true); err != nil {
 		return nil, err
 	}
@@ -127,52 +126,32 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 			if err := recordAgentFixHead(sctx, s.Name(), headSHA); err != nil {
 				return nil, err
 			}
-			// The comparison receipt follows the run's own head, exactly as
-			// it does for every other forward commit. Without this the
-			// attestation's own comparison would refuse the head the pipeline
-			// just committed.
+			// Accept the live comparison through the shared guard before
+			// binding the correction, including when Push returns to Review.
+			// A failed target observation must leave the receipt untouched.
 			receipt, err := sctx.DB.GetRunPRContext(sctx.Run.ID)
 			if err != nil {
 				return nil, err
 			}
 			if receipt != nil {
-				var forge *accountedForge
-				if selected := sctx.PRTarget; selected != nil && selected.ForgeHeadSHA != "" {
-					observed := receipt.PRContextCandidate
-					observed.PRURL, observed.SourceBranch, observed.TargetBranch = selected.PRURL, selected.SourceBranch, selected.TargetBranch
-					if !scm.SameSourceRepository(resolvedProvider(sctx), receipt.SourceRepo, selected.SourceRepo) {
-						observed.SourceRepo = selected.SourceRepo
-					}
-					observed.ForgeHeadSHA = selected.ForgeHeadSHA
-					receipt, forge, err = reconcileAccountedForgeHead(sctx, receipt, observed, headSHA)
-					if err != nil {
-						return nil, err
-					}
+				selection := pipeline.PRTargetSelection{
+					PRURL: receipt.PRURL, SourceRepo: receipt.SourceRepo, SourceBranch: receipt.SourceBranch,
+					TargetBranch: receipt.TargetBranch, ForgeHeadSHA: receipt.ForgeHeadSHA,
 				}
-				own, err := prComparisonAtTarget(sctx, receipt.TargetBranch, receipt.TargetSHA, headSHA)
+				if sctx.PRTarget != nil {
+					selection = *sctx.PRTarget
+				}
+				comparison := *sctx
+				comparison.PRContextAfterStep = true
+				decision, err := guardPRContextWithSelection(&comparison, s.Name(), selection, false)
 				if err != nil {
 					return nil, err
 				}
-				own.PRURL, own.SourceRepo, own.SourceBranch, own.ForgeHeadSHA = receipt.PRURL, receipt.SourceRepo, receipt.SourceBranch, receipt.ForgeHeadSHA
-				bindOwnHead = func() error {
-					_, err := sctx.DB.AdvanceRunPRContext(sctx.Run.ID, own, forge.options()...)
-					return err
+				if decision.RestartFrom != "" {
+					return &pipeline.StepOutcome{RestartFrom: decision.RestartFrom}, nil
 				}
 			}
 			newHeadSHA = headSHA
-		}
-	}
-
-	if bindOwnHead != nil {
-		rewind, err := detectTargetAdvanceAtPublication(sctx, s.Name())
-		if err != nil {
-			return nil, err
-		}
-		if rewind {
-			return &pipeline.StepOutcome{RestartFrom: types.StepRebase}, nil
-		}
-		if err := bindOwnHead(); err != nil {
-			return nil, err
 		}
 	}
 

@@ -89,7 +89,7 @@ func TestPRContextGuardLocalLineagePreservesForgeHead(t *testing.T) {
 // The step's own outcome asks for a re-review when the head moved, so the run
 // restarts at Review instead of failing.
 func TestPushStep_FormatterCommitAtThePublicationBoundaryIsThePipelineOwn(t *testing.T) {
-	c, _ := publicationFixture(t)
+	c, selected := publicationFixture(t)
 	// The formatter changed a tracked file: the worktree holds the
 	// formatter's output, and HEAD holds what it replaced.
 	path := filepath.Join(c.WorkDir, "formatted.go")
@@ -102,6 +102,13 @@ func TestPushStep_FormatterCommitAtThePublicationBoundaryIsThePipelineOwn(t *tes
 	// the other one.
 	headBefore := gitCmd(t, c.WorkDir, "rev-parse", "HEAD")
 	c.Run.HeadSHA = headBefore
+	// Review validated this committed file, so its comparison must name the
+	// same head before Push makes the formatter's separate correction.
+	c.PRContextAfterStep = true
+	if _, err := guardPRContextWithSelection(c, types.StepReview, selected, false); err != nil {
+		t.Fatal(err)
+	}
+	c.PRContextAfterStep = false
 	recordReviewApproval(t, c, headBefore)
 	if err := os.WriteFile(path, []byte("package main\n\nfunc main() {}\n\n\n"), 0600); err != nil {
 		t.Fatal(err)
