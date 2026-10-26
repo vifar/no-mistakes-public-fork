@@ -348,13 +348,6 @@ func (a *accountedForge) withForge(receipt *db.PRContext, forge string) *db.PRCo
 	return &moved
 }
 
-func (a *accountedForge) stored(receipt *db.PRContext) *db.PRContext {
-	if a == nil {
-		return receipt
-	}
-	return a.withForge(receipt, a.from)
-}
-
 func (a *accountedForge) overlay(receipt *db.PRContext) *db.PRContext {
 	if a == nil {
 		return receipt
@@ -564,18 +557,10 @@ func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName
 	if targetChanged && eligible && previous.LocalHeadSHA != candidate.LocalHeadSHA &&
 		sctx.PRContextAfterStep && step.Order() >= types.StepReview.Order() && step.Order() <= types.StepPush.Order() &&
 		sameRewindIdentity(previous, candidate) && candidate.LocalHeadSHA == sctx.Run.HeadSHA {
-		if classifies {
-			if err := validateTargetAdvanceHead(sctx, previous, candidate); err != nil {
-				return pipeline.PRContextDecision{}, err
-			}
-			acceptLocal = true
-		} else {
-			previous, err = attributeTargetAdvanceHead(sctx, forge.stored(previous), candidate)
-			if err != nil {
-				return pipeline.PRContextDecision{}, err
-			}
-			previous = forge.overlay(previous)
+		if err := validateTargetAdvanceHead(sctx, previous, candidate); err != nil {
+			return pipeline.PRContextDecision{}, err
 		}
+		acceptLocal = true
 	}
 	// A completed REBASE also moves HEAD in the same window, and it REWRITES
 	// the head rather than extending it, so only the run's own record proves
@@ -584,15 +569,7 @@ func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName
 	if targetChanged && eligible && previous.LocalHeadSHA != candidate.LocalHeadSHA &&
 		sctx.PRContextAfterStep && step == types.StepRebase && sctx.PRContextRebaseCompleted &&
 		sameRewindIdentity(previous, candidate) && candidate.LocalHeadSHA == sctx.Run.HeadSHA {
-		if classifies {
-			acceptLocal = true
-		} else {
-			previous, err = attributeRebasedHead(sctx, forge.stored(previous), candidate)
-			if err != nil {
-				return pipeline.PRContextDecision{}, err
-			}
-			previous = forge.overlay(previous)
-		}
+		acceptLocal = true
 	}
 	if classifies {
 		_, bindErr := classifyTargetAdvance(sctx, step, selection, previous, candidate, observedSource, forge, acceptLocal)

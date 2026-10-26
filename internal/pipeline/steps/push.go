@@ -61,6 +61,7 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	}
 	ctx := sctx.Ctx
 	newHeadSHA := ""
+	var bindOwnHead func() error
 	if err := sctx.DB.SetRunPushActive(sctx.Run.ID, true); err != nil {
 		return nil, err
 	}
@@ -153,11 +154,25 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 					return nil, err
 				}
 				own.PRURL, own.SourceRepo, own.SourceBranch, own.ForgeHeadSHA = receipt.PRURL, receipt.SourceRepo, receipt.SourceBranch, receipt.ForgeHeadSHA
-				if _, err := sctx.DB.AdvanceRunPRContext(sctx.Run.ID, own, forge.options()...); err != nil {
-					return nil, err
+				bindOwnHead = func() error {
+					_, err := sctx.DB.AdvanceRunPRContext(sctx.Run.ID, own, forge.options()...)
+					return err
 				}
 			}
 			newHeadSHA = headSHA
+		}
+	}
+
+	if bindOwnHead != nil {
+		rewind, err := detectTargetAdvanceAtPublication(sctx, s.Name())
+		if err != nil {
+			return nil, err
+		}
+		if rewind {
+			return &pipeline.StepOutcome{RestartFrom: types.StepRebase}, nil
+		}
+		if err := bindOwnHead(); err != nil {
+			return nil, err
 		}
 	}
 

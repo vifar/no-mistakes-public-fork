@@ -186,8 +186,8 @@ func TestPushStep_CorrectionAndTargetAdvanceRewind(t *testing.T) {
 				t.Fatalf("push correction: %+v, %v", outcome, err)
 			}
 			if boundary == "post-step" {
-				if outcome.RestartFrom != types.StepReview {
-					t.Fatalf("correction did not request review: %+v", outcome)
+				if outcome.RestartFrom != types.StepRebase {
+					t.Fatalf("correction with an advanced target did not rewind before review: %+v", outcome)
 				}
 				receipt, err := c.DB.GetRunPRContext(c.Run.ID)
 				if err != nil || receipt == nil {
@@ -243,5 +243,32 @@ func TestPushStep_TargetAdvanceRejectsUnrecordedCorrection(t *testing.T) {
 				t.Fatalf("unrecorded correction created a rewind: %+v, %v", pending, err)
 			}
 		})
+	}
+}
+
+func TestPushStep_RefusedCorrectionKeepsCommitButNotTheReceipt(t *testing.T) {
+	c, _ := publicationFixture(t)
+	oldHead := c.Run.HeadSHA
+	advanceRewindTarget(t, c)
+	c.Config.Rebase.MaxTargetAdvanceRewinds = 0
+	before, err := c.DB.GetRunPRContext(c.Run.ID)
+	if err != nil || before == nil {
+		t.Fatalf("receipt: %+v, %v", before, err)
+	}
+	if err := os.WriteFile(filepath.Join(c.WorkDir, "feature.txt"), []byte("formatted feature\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		_, err = (&PushStep{}).Execute(c)
+		after, readErr := c.DB.GetRunPRContext(c.Run.ID)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		pending, _ := c.DB.GetPendingTargetRewind(c.Run.ID)
+		head := gitCmd(t, c.WorkDir, "rev-parse", "HEAD")
+		t.Logf("push attempt %d local=%s->%s generation=%d->%d pin=%q err=%v", i, before.LocalHeadSHA, after.LocalHeadSHA, before.Generation, after.Generation, after.PinnedLocalHeadSHA, err)
+		if err == nil || *after != *before || pending != nil || head == oldHead {
+			t.Fatalf("refused correction: err=%v receipt=%+v pending=%+v head=%s", err, after, pending, head)
+		}
 	}
 }
