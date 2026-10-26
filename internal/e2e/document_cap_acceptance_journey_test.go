@@ -174,8 +174,10 @@ func TestDocumentCapAcceptanceRollback(t *testing.T) {
 			scenario := documentJourneyScenarioWith(t, "", nil, documentJourneyCapGapAction())
 			h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: scenario})
 			t.Cleanup(h.dumpDebugState)
-			branch, head := documentJourneyStart(t, h, "document:\n  max_commits_per_run: 0\ncommands:\n  lint: 'true'\n")
-			parked := waitForStepStatus(t, h, branch, types.StepDocument, types.StepStatusAwaitingApproval, 90*time.Second)
+			commitTrustedRepoConfig(t, h, "document:\n  max_commits_per_run: 0\ncommands:\n  lint: 'true'\n")
+			initFromOwnWorktree(t, h, "init-cap-rollback")
+			const branch = "feature/cap-rollback"
+			head := h.CommitChange(branch, "feature.txt", "feature\n", "submit feature")
 			action := capJourneyCheck(documentJourneyAction("README.md", "forbidden repair\n"))
 			action["git"] = [][]string{{"add", "README.md"}, {"commit", "-m", "forbidden over-budget commit"}}
 			commands := action["git"].([][]string)
@@ -194,21 +196,25 @@ func TestDocumentCapAcceptanceRollback(t *testing.T) {
 			}
 			action["git"] = commands
 			documentJourneyScenarioWith(t, scenario, nil, action)
-			previous := documentJourneyFix(t, h, parked)
+			// Exercise the initial read-only check. An explicit fix response
+			// authorizes a repair pass, which is a different contract.
+			h.PushToGate(branch)
+			var parked *ipc.RunInfo
 			switch kind {
 			case "reassess":
-				parked = documentJourneyNextGate(t, h, parked.ID, types.StepDocument, previous)
-				if capJourneyCalls(h) != 3 {
-					t.Fatalf("expected initial check plus one reassessment pair, got %d", capJourneyCalls(h))
+				parked = waitForStepStatus(t, h, branch, types.StepDocument, types.StepStatusAwaitingApproval, 90*time.Second)
+				if capJourneyCalls(h) != 2 {
+					t.Fatalf("expected one check and one reassessment, got %d", capJourneyCalls(h))
 				}
 			case "repeat-edit":
 				parked = documentJourneyFailed(t, h, branch, "edited the worktree twice")
-				if capJourneyCalls(h) != 3 {
+				if capJourneyCalls(h) != 2 {
 					t.Fatal("reassessment was not bounded")
 				}
 			case "failed":
 				parked = documentJourneyFailed(t, h, branch, "agent document gap check")
 			case "cancelled":
+				parked = waitForStepStatus(t, h, branch, types.StepDocument, types.StepStatusRunning, 90*time.Second)
 				worktree := paths.WithRoot(h.NMHome).WorktreeDir(parked.RepoID, parked.ID)
 				deadline := time.Now().Add(30 * time.Second)
 				for gitIn(t, h, worktree, "rev-parse", "HEAD") == head {

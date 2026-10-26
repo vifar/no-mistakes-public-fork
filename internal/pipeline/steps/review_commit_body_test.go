@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -13,6 +15,52 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+// The 4096-byte summary bound rejects a repair before publication. Inspect
+// rollback through Review itself, while its worktree still exists: terminal
+// daemon cleanup is allowed to remove the checkout after this failure.
+func TestReviewStep_RejectsOversizedFixSummary(t *testing.T) {
+	t.Parallel()
+	dir, base, head := setupGitRepo(t)
+	before, err := os.ReadFile(filepath.Join(dir, "feature.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := json.Marshal(map[string]string{"summary": strings.Repeat("x", 4097), "verification": "passed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		calls++
+		writeTestFile(t, dir, "feature.txt", "rejected repair\n")
+		writeTestFile(t, dir, "new-file.txt", "rejected addition\n")
+		gitCmd(t, dir, "add", "feature.txt", "new-file.txt")
+		return &agent.Result{Output: output}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, base, head, config.Commands{})
+	sctx.Fixing = true
+	sctx.PreviousFindings = `{"findings":[{"id":"r1","file":"feature.txt","severity":"warning","action":"auto-fix","description":"unsafe value"}]}`
+	outcome, err := (&ReviewStep{}).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "commit summary must not exceed 4096 bytes") || outcome != nil {
+		t.Fatalf("oversized summary outcome = %+v, error = %v", outcome, err)
+	}
+	if calls != 1 {
+		t.Fatalf("rejected repair reached a re-review: agent calls = %d", calls)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != head || sctx.Run.HeadSHA != head {
+		t.Fatalf("rejected repair advanced HEAD: checkout=%s recorded=%s want=%s", got, sctx.Run.HeadSHA, head)
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, "feature.txt")); err != nil || string(got) != string(before) {
+		t.Fatalf("rejected repair changed original bytes: %q, %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "new-file.txt")); !os.IsNotExist(err) {
+		t.Fatalf("rejected repair left its added file: %v", err)
+	}
+	if status := gitStatusPorcelain(t, dir); status != "" {
+		t.Fatalf("rejected repair left worktree or index edits: %s", status)
+	}
+}
 
 // Issue #98: inspect the real Git body, separately from the subject, after
 // executing the same repair and commit path the review step uses.
