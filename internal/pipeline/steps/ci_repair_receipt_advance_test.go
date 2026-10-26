@@ -62,6 +62,25 @@ func TestCIMonitorAdvancesReceiptForItsOwnPublishedRepair(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			sctx.PRContext = receipt
+			if tc.wantReady {
+				// A pending Review claim must remain resolvable when the
+				// monitor returns after observing the published repair.
+				review, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+				if err != nil {
+					t.Fatal(err)
+				}
+				encoded, err := types.MarshalFindingsJSON(Findings{Items: []Finding{pendingReviewCIClaim("build-42", head)}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := sctx.DB.SetStepFindings(review.ID, encoded); err != nil {
+					t.Fatal(err)
+				}
+				if err := sctx.DB.CompleteReviewStep(review.ID, sctx.Run.ID, head, 0, 1, ""); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, prURL); err != nil {
 				t.Fatal(err)
 			}
@@ -127,9 +146,9 @@ func TestCIMonitorAdvancesReceiptForItsOwnPublishedRepair(t *testing.T) {
 			if host == nil {
 				t.Fatalf("build host: %s", reason)
 			}
-			checks := []scm.Check{{Name: "build", HeadSHA: forgeHead, Bucket: scm.CheckBucketPass, State: "SUCCESS"}}
+			checks := []scm.Check{{Name: "build", ProviderID: "build-42", HeadSHA: forgeHead, Bucket: scm.CheckBucketPass, State: "SUCCESS"}}
 
-			err = verifyCIMonitorComparison(sctx, host, checks)
+			_, err = logVerifiedCIMonitorStatus(sctx, host, checks, ciChecksPassedMsg, "")
 			after, readErr := sctx.DB.GetRunPRContext(sctx.Run.ID)
 			if readErr != nil {
 				t.Fatal(readErr)
@@ -140,6 +159,9 @@ func TestCIMonitorAdvancesReceiptForItsOwnPublishedRepair(t *testing.T) {
 				}
 				if after.PRContextCandidate != receipt.PRContextCandidate {
 					t.Fatalf("unproven advance replaced the receipt:\nbefore %+v\nafter  %+v", receipt, after)
+				}
+				if sctx.PRContext != receipt {
+					t.Fatal("unproven advance replaced the active step's comparison")
 				}
 				return
 			}
@@ -158,6 +180,21 @@ func TestCIMonitorAdvancesReceiptForItsOwnPublishedRepair(t *testing.T) {
 			}
 			if after.DiffDigest == receipt.DiffDigest {
 				t.Fatal("advance kept the pre-repair diff digest")
+			}
+			// The oracle is the Review support contract: the same immutable
+			// check ID passing on a proven published descendant disproves the
+			// original claim, with the result bound to the new comparison.
+			ownerHost := &supportCheckHost{Host: host, facts: scm.PRFacts{
+				PR: scm.PR{URL: prURL}, State: scm.PRStateOpen, SourceRepository: "test/repo",
+				SourceBranch: "feature", HeadSHA: repairHead, BaseBranch: "main",
+			}, checks: checks}
+			results, err := resolveCIReviewSupport(sctx, ownerHost, &scm.PR{URL: prURL, Number: "42"})
+			if err != nil || len(results) != 1 {
+				t.Fatalf("resolve Review claim after readiness advance: %+v, %v", results, err)
+			}
+			result := results[0].Support.OwnerResult
+			if result.Disposition != types.FindingSupportDispositionDisproven || result.HeadSHA != repairHead || result.Generation != after.Generation {
+				t.Fatalf("Review claim resolved against the wrong comparison: %+v", result)
 			}
 		})
 	}

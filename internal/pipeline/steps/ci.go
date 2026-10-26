@@ -1389,6 +1389,9 @@ func verifyCIMonitorComparison(sctx *pipeline.StepContext, host scm.Host, checks
 		if receipt == nil || sctx.Run.HeadSHA != receipt.LocalHeadSHA {
 			return errCIReadinessReceiptMissing
 		}
+		// The deferred Review-support resolver uses the active step's
+		// comparison too; it must follow the same proven receipt advance.
+		sctx.PRContext = receipt
 		sctx.Log(fmt.Sprintf("CI readiness comparison advanced to this run's published repair head %s", shortObjectID(receipt.LocalHeadSHA)))
 	}
 	if durable == nil || durable.HeadSHA != receipt.LocalHeadSHA {
