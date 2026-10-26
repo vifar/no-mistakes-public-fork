@@ -35,6 +35,9 @@ type PRContext struct {
 	// CIQualified survives transient readiness failures only for this exact
 	// comparison. Rebinding a changed comparison clears it.
 	CIQualified bool
+	// PinnedLocalHeadSHA is an earlier local head the run held while the
+	// current forge observation was already pinned. Empty when none.
+	PinnedLocalHeadSHA string
 }
 
 type PRContextBindResult struct {
@@ -46,13 +49,13 @@ type PRContextBindResult struct {
 // interpreted as a receipt.
 func (d *DB) GetRunPRContext(runID string) (*PRContext, error) {
 	context := &PRContext{}
-	var prURL, sourceRepo, sourceBranch, forgeHead sql.NullString
+	var prURL, sourceRepo, sourceBranch, forgeHead, pinnedLocal sql.NullString
 	err := d.sql.QueryRow(`SELECT pr_url, source_repo, source_branch, forge_head_sha,
 		local_head_sha, target_branch, target_sha, merge_base_sha, diff_digest,
-		observed_at, generation, ci_qualified FROM run_pr_contexts WHERE run_id = ?`, runID).Scan(
+		observed_at, generation, ci_qualified, pinned_local_head_sha FROM run_pr_contexts WHERE run_id = ?`, runID).Scan(
 		&prURL, &sourceRepo, &sourceBranch, &forgeHead,
 		&context.LocalHeadSHA, &context.TargetBranch, &context.TargetSHA,
-		&context.MergeBaseSHA, &context.DiffDigest, &context.ObservedAt, &context.Generation, &context.CIQualified)
+		&context.MergeBaseSHA, &context.DiffDigest, &context.ObservedAt, &context.Generation, &context.CIQualified, &pinnedLocal)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -63,6 +66,7 @@ func (d *DB) GetRunPRContext(runID string) (*PRContext, error) {
 	context.SourceRepo = sourceRepo.String
 	context.SourceBranch = sourceBranch.String
 	context.ForgeHeadSHA = forgeHead.String
+	context.PinnedLocalHeadSHA = pinnedLocal.String
 	return context, nil
 }
 
@@ -108,13 +112,13 @@ func (d *DB) bindRunPRContextOnce(writeCtx context.Context, runID string, candid
 		return PRContextBindResult{}, fmt.Errorf("bind run PR context: PR identity conflicts with run")
 	}
 	previous := &PRContext{}
-	var prURL, sourceRepo, sourceBranch, forgeHead sql.NullString
+	var prURL, sourceRepo, sourceBranch, forgeHead, pinnedLocal sql.NullString
 	err = tx.QueryRowContext(writeCtx, `SELECT pr_url, source_repo, source_branch, forge_head_sha,
 		local_head_sha, target_branch, target_sha, merge_base_sha, diff_digest,
-		observed_at, generation FROM run_pr_contexts WHERE run_id = ?`, runID).Scan(
+		observed_at, generation, pinned_local_head_sha FROM run_pr_contexts WHERE run_id = ?`, runID).Scan(
 		&prURL, &sourceRepo, &sourceBranch, &forgeHead,
 		&previous.LocalHeadSHA, &previous.TargetBranch, &previous.TargetSHA,
-		&previous.MergeBaseSHA, &previous.DiffDigest, &previous.ObservedAt, &previous.Generation)
+		&previous.MergeBaseSHA, &previous.DiffDigest, &previous.ObservedAt, &previous.Generation, &pinnedLocal)
 	initial := errors.Is(err, sql.ErrNoRows)
 	if err != nil && !initial {
 		return PRContextBindResult{}, fmt.Errorf("bind run PR context: read prior receipt: %w", err)
@@ -124,6 +128,7 @@ func (d *DB) bindRunPRContextOnce(writeCtx context.Context, runID string, candid
 		previous.SourceRepo = sourceRepo.String
 		previous.SourceBranch = sourceBranch.String
 		previous.ForgeHeadSHA = forgeHead.String
+		previous.PinnedLocalHeadSHA = pinnedLocal.String
 		if previous.SourceRepo != "" && (candidate.SourceRepo != previous.SourceRepo || candidate.SourceBranch != previous.SourceBranch) {
 			return PRContextBindResult{}, fmt.Errorf("bind run PR context: source identity conflicts with receipt")
 		}
@@ -218,21 +223,29 @@ func (d *DB) bindRunPRContextOnce(writeCtx context.Context, runID string, candid
 		}
 	}
 	ts := now()
+	var pinnedLocalHead string
+	if !initial && previous.PRURL != "" && previous.ForgeHeadSHA != "" && previous.ForgeHeadSHA == candidate.ForgeHeadSHA {
+		pinnedLocalHead = previous.PinnedLocalHeadSHA
+		if pinnedLocalHead == "" && previous.LocalHeadSHA != candidate.LocalHeadSHA {
+			pinnedLocalHead = previous.LocalHeadSHA
+		}
+	}
 	if _, err := tx.ExecContext(writeCtx, `INSERT INTO run_pr_contexts (
 		run_id, pr_url, source_repo, source_branch, forge_head_sha,
 		local_head_sha, target_branch, target_sha, merge_base_sha, diff_digest,
-		observed_at, generation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		observed_at, generation, pinned_local_head_sha) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(run_id) DO UPDATE SET
 		pr_url=excluded.pr_url, source_repo=excluded.source_repo,
 		source_branch=excluded.source_branch, forge_head_sha=excluded.forge_head_sha,
 		local_head_sha=excluded.local_head_sha, target_branch=excluded.target_branch,
 		target_sha=excluded.target_sha, merge_base_sha=excluded.merge_base_sha,
 		diff_digest=excluded.diff_digest, observed_at=excluded.observed_at,
-		generation=excluded.generation, ci_qualified=0, retained_target_sha=NULL`,
+		generation=excluded.generation, ci_qualified=0, retained_target_sha=NULL,
+		pinned_local_head_sha=excluded.pinned_local_head_sha`,
 		runID, optionalPRField(candidate.PRURL), optionalPRField(candidate.SourceRepo),
 		optionalPRField(candidate.SourceBranch), optionalPRField(candidate.ForgeHeadSHA),
 		candidate.LocalHeadSHA, candidate.TargetBranch, candidate.TargetSHA,
-		candidate.MergeBaseSHA, candidate.DiffDigest, ts, generation); err != nil {
+		candidate.MergeBaseSHA, candidate.DiffDigest, ts, generation, optionalPRField(pinnedLocalHead)); err != nil {
 		return PRContextBindResult{}, fmt.Errorf("bind run PR context: write receipt: %w", err)
 	}
 	if candidate.PRURL != "" && recordedPRURL.String == "" {

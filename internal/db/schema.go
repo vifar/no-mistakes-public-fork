@@ -558,6 +558,9 @@ var migrationStatements = append([]string{
         AND r.review_approved_head_sha=local_head_sha)`,
 	// Separate observation: never replace the original qualification comparison.
 	`ALTER TABLE run_pr_contexts ADD COLUMN retained_target_sha TEXT`,
+	// The local head the run had pinned when the still-current forge observation
+	// was recorded; a later local rewrite must not lose that proof.
+	`ALTER TABLE run_pr_contexts ADD COLUMN pinned_local_head_sha TEXT`,
 }, statusValidationMigrationStatements...)
 
 // additiveMigrationStatements hold the additive schema changes that a

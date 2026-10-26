@@ -504,3 +504,51 @@ func TestAccountedForgeHeadRewindAfterLeftoverCommit(t *testing.T) {
 		}
 	}
 }
+
+func TestAccountedForgeHeadCatchUpAfterSuccessfulPostRebaseGuard(t *testing.T) {
+	for _, observation := range []string{"pinned", "foreign"} {
+		t.Run(observation, func(t *testing.T) {
+			c, selected := accountedRewindFixture(t)
+			original := c.Run.HeadSHA
+			foreign := foreignForgeHead(t, c)
+			target := advanceRewindTarget(t, c)
+			gitCmd(t, c.WorkDir, "rebase", target)
+			c.Run.HeadSHA = gitCmd(t, c.WorkDir, "rev-parse", "HEAD")
+			if err := c.DB.UpdateRunHeadSHA(c.Run.ID, c.Run.HeadSHA); err != nil {
+				t.Fatal(err)
+			}
+			if isAncestor(c.Ctx, c.WorkDir, original, c.Run.HeadSHA) {
+				t.Fatal("fixture must rewrite the pinned local head")
+			}
+			c.PRContextAfterStep, c.PRContextRebaseCompleted = true, true
+			if _, err := GuardPRContext(c, types.StepRebase); err != nil {
+				t.Fatalf("stale forge post-rebase guard: %v", err)
+			}
+			c.PRContextAfterStep, c.PRContextRebaseCompleted = false, false
+			between, err := c.DB.GetRunPRContext(c.Run.ID)
+			if err != nil || between.LocalHeadSHA != c.Run.HeadSHA || between.ForgeHeadSHA != selected.ForgeHeadSHA {
+				t.Fatalf("post-rebase receipt: %+v %v", between, err)
+			}
+			if between.PinnedLocalHeadSHA != original {
+				t.Fatalf("pinned proof not retained: %+v", between)
+			}
+			selected.ForgeHeadSHA = map[string]string{"pinned": original, "foreign": foreign}[observation]
+			setAccountedForgeFacts(t, c, selected)
+			_, err = GuardPRContext(c, types.StepReview)
+			after, readErr := c.DB.GetRunPRContext(c.Run.ID)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			t.Logf("review entry pinned=%s observed=%s pinned-local=%s local=%s generation=%d->%d err=%v", between.ForgeHeadSHA, selected.ForgeHeadSHA, original, c.Run.HeadSHA, between.Generation, after.Generation, err)
+			if observation == "foreign" {
+				if err == nil || !strings.Contains(err.Error(), "unaccounted pull request head") || after.ForgeHeadSHA != between.ForgeHeadSHA || after.Generation != between.Generation {
+					t.Fatalf("foreign head changed receipt: %+v %v", after, err)
+				}
+				return
+			}
+			if err != nil || after.ForgeHeadSHA != original || after.Generation != between.Generation || after.LocalHeadSHA != c.Run.HeadSHA {
+				t.Fatalf("delayed catch-up rejected: %+v %v", after, err)
+			}
+		})
+	}
+}
