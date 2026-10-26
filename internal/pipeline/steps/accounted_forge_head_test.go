@@ -553,7 +553,7 @@ func TestAccountedForgeHeadCatchUpAfterSuccessfulPostRebaseGuard(t *testing.T) {
 	}
 }
 
-func TestAccountedForgeHeadIntermediateCorrectionAfterRebaseIsRefusedWithoutHeadHistory(t *testing.T) {
+func TestAccountedForgeHeadCatchUpToIntermediateCorrectionAfterRebase(t *testing.T) {
 	c, selected := accountedRewindFixture(t)
 	original := c.Run.HeadSHA
 	gitCmd(t, c.WorkDir, "commit", "--allow-empty", "-m", "Review fix")
@@ -596,8 +596,16 @@ func TestAccountedForgeHeadIntermediateCorrectionAfterRebaseIsRefusedWithoutHead
 		t.Fatal(readErr)
 	}
 	t.Logf("intermediate catch-up pinned=%s observed=%s proof=%q local=%s generation=%d->%d err=%v", between.ForgeHeadSHA, correction, between.PinnedLocalHeadSHA, rebased, between.Generation, after.Generation, err)
-	if err == nil || after.ForgeHeadSHA != between.ForgeHeadSHA || after.Generation != between.Generation {
-		t.Fatalf("intermediate head outside the single pinned proof changed the receipt: %+v %v", after, err)
+	if err != nil || after.ForgeHeadSHA != correction || after.Generation != between.Generation {
+		t.Fatalf("intermediate catch-up rejected: %+v %v", after, err)
+	}
+	if after.PinnedLocalHeadSHA == "" {
+		t.Fatalf("receipt lost its single pinned proof: %+v", after)
+	}
+	selected.ForgeHeadSHA = foreignForgeHead(t, c)
+	setAccountedForgeFacts(t, c, selected)
+	if _, err := GuardPRContext(c, types.StepReview); err == nil || !strings.Contains(err.Error(), "unaccounted pull request head") {
+		t.Fatalf("a head the run never published or accepted must be refused: %v", err)
 	}
 }
 
@@ -645,4 +653,29 @@ func TestAccountedForgeHeadRefusedTransitionDoesNotPersistForgeObservation(t *te
 			}
 		}
 	})
+}
+
+func TestAccountedForgeHeadAccountingWritesNothingUntilCommit(t *testing.T) {
+	c, selected := accountedRewindFixture(t)
+	before, err := c.DB.GetRunPRContext(c.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed := before.PRContextCandidate
+	observed.ForgeHeadSHA = c.Run.HeadSHA
+	refreshed, commit, err := reconcileAccountedForgeHead(c, before, observed, before.LocalHeadSHA)
+	if err != nil || refreshed.ForgeHeadSHA != c.Run.HeadSHA {
+		t.Fatalf("provisional accounting: %+v %v", refreshed, err)
+	}
+	durable, _ := c.DB.GetRunPRContext(c.Run.ID)
+	if durable.ForgeHeadSHA != selected.ForgeHeadSHA || durable.Generation != before.Generation {
+		t.Fatalf("accounting persisted before commit: %+v", durable)
+	}
+	if err := commit(); err != nil {
+		t.Fatal(err)
+	}
+	durable, _ = c.DB.GetRunPRContext(c.Run.ID)
+	if durable.ForgeHeadSHA != c.Run.HeadSHA || durable.Generation != before.Generation {
+		t.Fatalf("commit lost the observation or advanced the generation: %+v", durable)
+	}
 }

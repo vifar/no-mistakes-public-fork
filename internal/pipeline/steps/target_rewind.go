@@ -359,30 +359,23 @@ func checkedRewindTargets(c *pipeline.StepContext, targets []string) (checked []
 	if previous.SourceBranch == candidate.SourceBranch && scm.SameSourceRepository(resolvedProvider(c), previous.SourceRepo, candidate.SourceRepo) {
 		candidate.SourceRepo = previous.SourceRepo
 	}
+	commitForge := func() error { return nil }
 	if (selected.State == "" || selected.State == scm.PRStateOpen) && samePRContextIdentity(previous, candidate) {
-		var undoRefresh func() error
-		previous, undoRefresh, err = reconcileAccountedForgeHead(c, previous, candidate, previous.LocalHeadSHA)
+		pinnedForge := previous.ForgeHeadSHA
+		previous, commitForge, err = reconcileAccountedForgeHead(c, previous, candidate, previous.LocalHeadSHA)
 		if err != nil {
 			return nil, cleanup, err
 		}
-		defer func() {
-			if err != nil {
-				err = errors.Join(err, undoRefresh())
-			}
-		}()
-		pending, err = c.DB.GetPendingTargetRewind(c.Run.ID)
-		if err != nil {
-			return nil, cleanup, err
-		}
-		if pending == nil {
-			return nil, cleanup, fmt.Errorf("pending rewind changed while checking integration")
-		}
+		pending = pendingWithForgeObservation(pending, pinnedForge, previous.ForgeHeadSHA)
 	}
 	if head != c.Run.HeadSHA || head != previous.LocalHeadSHA || head != pending.LocalHeadSHA || !samePendingRewindIdentity(c, pending, previous, candidate, selected) {
 		return nil, cleanup, fmt.Errorf("local head or PR identity changed during pending rewind")
 	}
 	if !sameRewindSource(pending.SourceSHA, observed.source) {
 		return nil, cleanup, fmt.Errorf("remote source changed during pending rewind")
+	}
+	if err = commitForge(); err != nil {
+		return nil, cleanup, err
 	}
 	if candidate.TargetSHA != previous.TargetSHA {
 		if _, err = classifyTargetAdvance(c, types.StepRebase, selected, previous, candidate, observed.source); err != nil {

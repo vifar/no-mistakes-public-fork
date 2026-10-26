@@ -29,7 +29,7 @@ func TestRefreshPRForgeHeadKeepsEvidenceAndRejectsStaleReceipt(t *testing.T) {
 	if _, err = d.sql.Exec(`UPDATE run_pr_contexts SET ci_qualified=1 WHERE run_id=?`, id); err != nil {
 		t.Fatal(err)
 	}
-	if err = d.RefreshRunPRForgeHead(id, *before, candidate.LocalHeadSHA); err != nil {
+	if err = d.RefreshRunPRForgeHead(id, *before, candidate.LocalHeadSHA, ""); err != nil {
 		t.Fatal(err)
 	}
 	after, err := d.GetRunPRContext(id)
@@ -43,7 +43,7 @@ func TestRefreshPRForgeHeadKeepsEvidenceAndRejectsStaleReceipt(t *testing.T) {
 	if after.Generation != before.Generation || !after.CIQualified || run.ReviewApprovedHeadSHA == nil || *run.ReviewApprovedHeadSHA != candidate.LocalHeadSHA {
 		t.Fatalf("authority lost: %+v %+v", after, run)
 	}
-	if err = d.RefreshRunPRForgeHead(id, *before, strings.Repeat("f", 40)); err == nil {
+	if err = d.RefreshRunPRForgeHead(id, *before, strings.Repeat("f", 40), ""); err == nil {
 		t.Fatal("stale same-generation receipt replaced refreshed observation")
 	}
 	unchanged, _ := d.GetRunPRContext(id)
@@ -70,7 +70,7 @@ func TestRefreshPRForgeHeadConcurrentWritersHaveOneWinner(t *testing.T) {
 	start := make(chan struct{})
 	for _, head := range []string{strings.Repeat("f", 40), candidate.LocalHeadSHA} {
 		wg.Add(1)
-		go func(head string) { defer wg.Done(); <-start; errs <- d.RefreshRunPRForgeHead(id, *before, head) }(head)
+		go func(head string) { defer wg.Done(); <-start; errs <- d.RefreshRunPRForgeHead(id, *before, head, "") }(head)
 	}
 	close(start)
 	wg.Wait()
@@ -138,7 +138,7 @@ func TestRefreshPRForgeHeadMatchesPendingIdentityInsteadOfCreationGeneration(t *
 			if mutationErr != nil {
 				t.Fatal(mutationErr)
 			}
-			err = d.RefreshRunPRForgeHead(id, *before, candidate.LocalHeadSHA)
+			err = d.RefreshRunPRForgeHead(id, *before, candidate.LocalHeadSHA, "")
 			if (err != nil) != (drift != "none") {
 				t.Fatalf("refresh with %s drift: %v", drift, err)
 			}

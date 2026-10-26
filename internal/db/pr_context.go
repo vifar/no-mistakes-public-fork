@@ -35,8 +35,9 @@ type PRContext struct {
 	// CIQualified survives transient readiness failures only for this exact
 	// comparison. Rebinding a changed comparison clears it.
 	CIQualified bool
-	// PinnedLocalHeadSHA is the local head the run held when the current forge
-	// observation was first pinned. Empty means no proof.
+	// PinnedLocalHeadSHA is the one earlier local head the run accepted while
+	// the current forge observation was pinned; each accepted local change
+	// replaces it. Empty means no proof.
 	PinnedLocalHeadSHA string
 }
 
@@ -226,7 +227,7 @@ func (d *DB) bindRunPRContextOnce(writeCtx context.Context, runID string, candid
 	var pinnedLocalHead string
 	if !initial && previous.PRURL != "" && previous.ForgeHeadSHA != "" && previous.ForgeHeadSHA == candidate.ForgeHeadSHA {
 		pinnedLocalHead = previous.PinnedLocalHeadSHA
-		if pinnedLocalHead == "" && previous.LocalHeadSHA != candidate.LocalHeadSHA {
+		if previous.LocalHeadSHA != candidate.LocalHeadSHA {
 			pinnedLocalHead = previous.LocalHeadSHA
 		}
 	}
@@ -357,9 +358,12 @@ func validHex(s string, length int) bool {
 // RefreshRunPRForgeHead changes only an accounted forge observation. The caller
 // proves ownership with Git; this transaction rechecks the exact receipt and
 // keeps its comparison generation, review authority and owner evidence intact.
-func (d *DB) RefreshRunPRForgeHead(runID string, expected PRContext, head string) error {
+func (d *DB) RefreshRunPRForgeHead(runID string, expected PRContext, head, acceptedLocalHead string) error {
 	next := expected.PRContextCandidate
 	next.ForgeHeadSHA = head
+	if acceptedLocalHead != "" && !validGitSHA(acceptedLocalHead) {
+		return fmt.Errorf("refresh forge head: invalid accepted local head")
+	}
 	if expected.PRURL == "" {
 		return fmt.Errorf("refresh forge head requires an attached PR")
 	}
@@ -372,11 +376,12 @@ func (d *DB) RefreshRunPRForgeHead(runID string, expected PRContext, head string
 			return err
 		}
 		defer tx.Rollback()
-		result, err := tx.ExecContext(ctx, `UPDATE run_pr_contexts SET forge_head_sha=?, observed_at=?
+		result, err := tx.ExecContext(ctx, `UPDATE run_pr_contexts SET forge_head_sha=?, observed_at=?,
+   pinned_local_head_sha=CASE WHEN ?='' THEN pinned_local_head_sha ELSE ? END
    WHERE run_id=? AND generation=? AND COALESCE(pr_url,'')=? AND COALESCE(source_repo,'')=?
    AND COALESCE(source_branch,'')=? AND COALESCE(forge_head_sha,'')=? AND local_head_sha=?
    AND target_branch=? AND target_sha=? AND merge_base_sha=? AND diff_digest=?`,
-			head, now(), runID, expected.Generation, expected.PRURL, expected.SourceRepo, expected.SourceBranch,
+			head, now(), acceptedLocalHead, acceptedLocalHead, runID, expected.Generation, expected.PRURL, expected.SourceRepo, expected.SourceBranch,
 			expected.ForgeHeadSHA, expected.LocalHeadSHA, expected.TargetBranch, expected.TargetSHA, expected.MergeBaseSHA, expected.DiffDigest)
 		if err != nil {
 			return err
