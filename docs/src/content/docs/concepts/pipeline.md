@@ -39,7 +39,7 @@ The pipeline is opinionated so that "passed the gate" has a stable meaning:
 | # | Step | What it does | Default auto-fix limit |
 |---|---|---|---|
 | 1 | **Intent** | Use supplied intent or infer it from recent local agent transcripts | n/a |
-| 2 | **Rebase** | Fetch fresh remote upstream and the configured branch target, then rebase your branch onto them | `3` |
+| 2 | **Rebase** | Fetch remote state and apply the [Rebase integration policy](/no-mistakes/reference/pipeline-steps/#rebase) | `3` |
 | 3 | **Review** | AI code review of your diff | `0` (requires approval) |
 | 4 | **Test** | Targeted local validation of the change and intent (not a full CI suite), plus evidence when intent is available | `3` |
 | 5 | **Document** | Update docs within the [commit budget](/no-mistakes/reference/repo-config/#documentmax_commits_per_run) and report unresolved gaps | no automatic follow-up loop |
@@ -51,7 +51,7 @@ The pipeline is opinionated so that "passed the gate" has a stable meaning:
 ## Why these steps, in this order
 
 - **Intent first** so downstream agent prompts and generated PR descriptions can include author intent supplied by the agent or inferred from transcripts.
-- **Rebase next** so everything else runs against the latest upstream and pushed-branch target.
+- **Rebase next** to check integration with fresh upstream and pushed-branch state before validation.
   The [Rebase reference](/no-mistakes/reference/pipeline-steps/#rebase) owns its approval checks for unpushed local-default work and the target-advance rewind exception.
   If there's no diff left after the rebase, the pipeline skips the rest.
   The first executed core step at or after Rebase fetches the comparison if no

@@ -806,11 +806,12 @@ func restorePreMergeHead(ctx context.Context, sctx *pipeline.StepContext, preMer
 // shouldSkipRebase checks whether a rebase onto targetRef can be skipped.
 // Returns true if targetRef doesn't exist, is already merged, or can be
 // fast-forwarded - and, for the PR base (base), whenever the head merges into
-// it without a conflict.
+// it without a conflict under rebase.integrate: on-conflict.
 //
-// The PR base is never integrated just because it moved (issue #237). A pull
-// request merges from its own head, so a head that merges cleanly needs no
-// rewrite: rebasing it anyway mints a new head nobody asked for, and that new
+// Under that default policy, the PR base is never integrated just because it
+// moved (issue #237). A pull request merges from its own head, so a head
+// that merges cleanly needs no rewrite: rebasing it anyway mints a new head
+// nobody asked for, and that new
 // head is what strands custody when the run is cancelled or aborted. Only a
 // real conflict, proven by a three-way merge of the head itself, integrates
 // the base - by rebase or merge exactly as before. This includes a head that

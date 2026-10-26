@@ -3910,7 +3910,8 @@ func applyRebaseOverrides(dst *Rebase, src *RebaseRaw) {
 	}
 }
 
-// validateRebaseRaw fails the config closed on an unrecognized rebase.strategy.
+// validateRebaseRaw fails closed on unrecognized integration policies or
+// strategies and negative rewind limits.
 // Silently falling back to the default would let a typo ("merges") quietly keep
 // rewriting history a maintainer asked to stop rewriting.
 func validateRebaseRaw(r RebaseRaw) error {

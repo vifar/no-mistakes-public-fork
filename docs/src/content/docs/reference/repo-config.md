@@ -1108,11 +1108,13 @@ rebase:
 - **`on-conflict` (default)** integrates the base only when the branch head conflicts with it. Before each integration the step merges the head into the fetched base with `git merge-tree`, which touches no ref or file. A clean merge keeps the head exactly as it is: no rebase, no merge commit and no reset, including a head that is behind the base. A pull request merges from its own head, so keeping it up to date buys nothing, and every new head it would create must be reviewed, tested and pushed again. A real conflict integrates and resolves as before.
 - **`always`** integrates every base that moved. This was the behavior before this setting existed. Use it when the target's protection requires a branch to be up to date before it merges.
 
-The same setting decides what a base that moves **during** a run means. Under `on-conflict`, a target that fast-forwards while the head still merges cleanly into it, and leaves the head's merge base where it was, changes nothing the run validated. The pull request's own diff stays byte-for-byte the same. The run keeps its comparison, its Review and Test results, and its published statuses. It does not rewind, restart, or fail. See [Target advances before publication](/no-mistakes/reference/pipeline-steps/#target-advances-before-publication). Under `always`, every target move is a comparison change, as it was before.
+The same setting governs [target advances during validation, publication, and shipping](/no-mistakes/reference/pipeline-steps/#target-advances-before-publication), whose step reference owns the comparison and evidence rules.
 
 The separate explicit opt-in [`ci.rebase_behind: true`](#cirebase_behind) still rebases a green BEHIND PR, regardless of `rebase.integrate`.
 
 The pushed source branch is not the base. Commits already on it are always integrated, so publication never drops them.
+
+This value comes only from the trusted default-branch copy, regardless of [`allow_repo_commands`](#allow_repo_commands), and overrides the operator's [`rebase.integrate`](/no-mistakes/reference/global-config/#rebaseintegrate). A pushed branch cannot change it in either direction. Unrecognized values fail configuration loading closed.
 
 ### rebase.strategy
 
