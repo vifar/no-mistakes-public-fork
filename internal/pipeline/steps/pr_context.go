@@ -420,7 +420,7 @@ func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName
 		candidate.SourceRepo = previous.SourceRepo
 	}
 
-	if !freshRetarget && samePRContextIdentity(previous, candidate) {
+	if !freshRetarget && (selection.State == "" || selection.State == scm.PRStateOpen) && samePRContextIdentity(previous, candidate) {
 		previous, err = reconcileAccountedForgeHead(sctx, previous, candidate, accountedForgeLocalHead(sctx, step, previous, candidate))
 		if err != nil {
 			return pipeline.PRContextDecision{}, err

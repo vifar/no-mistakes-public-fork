@@ -648,7 +648,7 @@ func TestTargetRewindRejectsRewriteAndChangedAttachedForgeHead(t *testing.T) {
 				if _, err := guardPRContextWithSelection(c, types.StepRebase, selected, false); err != nil {
 					t.Fatal(err)
 				}
-				selected.ForgeHeadSHA = c.Run.BaseSHA
+				selected.ForgeHeadSHA = foreignForgeHead(t, c)
 				advanceRewindTarget(t, c)
 			} else {
 				advanceRewindTarget(t, c)

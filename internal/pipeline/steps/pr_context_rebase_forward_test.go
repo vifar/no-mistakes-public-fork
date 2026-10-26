@@ -152,7 +152,8 @@ func TestPRContextGuardRefusesAForeignHeadMoveAfterRebase(t *testing.T) {
 }
 
 // A rewritten local head is not sufficient authority. The intent for #174
-// requires a completed Rebase and unchanged PR, source, target and forge head.
+// requires a completed Rebase and stable PR, source and target identities.
+// Forge movement must independently pass the accounted-head rule.
 // Each case breaks exactly one of those conditions and must preserve the receipt.
 func TestPRContextGuardRefusesUnprovenRebaseAdvance(t *testing.T) {
 	for _, boundary := range []string{"incomplete", "PR identity", "source repository", "source branch", "target branch", "forge head"} {
@@ -197,7 +198,7 @@ func TestPRContextGuardRefusesUnprovenRebaseAdvance(t *testing.T) {
 			case "target branch":
 				selected.TargetBranch = "release"
 			case "forge head":
-				selected.ForgeHeadSHA = c.Run.HeadSHA
+				selected.ForgeHeadSHA = foreignForgeHead(t, c)
 			}
 			decision, err := guardPRContextWithSelection(c, types.StepRebase, selected, false)
 			if err == nil {

@@ -14,7 +14,7 @@ import (
 
 // Drive the real boundary with disposable Git ancestry and forge responses.
 func TestAccountedForgeHeadCoreBoundaries(t *testing.T) {
-	for _, step := range []types.StepName{types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepPush} {
+	for _, step := range []types.StepName{types.StepRebase, types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepPush} {
 		for _, kind := range []string{"catch-up", "ancestor", "simultaneous fix", "foreign", "unaccounted local", "wrong base"} {
 			t.Run(string(step)+"/"+kind, func(t *testing.T) {
 				dir, base, head := setupGitRepo(t)
