@@ -333,15 +333,16 @@ func targetRewindHistory(t *testing.T, nmHome, runID string) (rewinds int64, pen
 	return
 }
 
-// A CI support claim makes a published repair return to Review. The next Test
-// advances the target: publication provenance must keep this run outside L.
+// A run that already published its initial head explicitly revalidates a CI
+// repair from Review. The next Test advances the target: the earlier publication
+// must prevent a rewind, even though the repair itself has not been published.
 func TestTargetAdvancePublishedCIRestartJourney(t *testing.T) {
 	scenario := cleanReviewScenario(t)
 	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: scenario, GlobalConfigExtra: "ci_timeout: 120s\n"})
 	setupStatefulGitHub(t, h)
 	script := filepath.Join(t.TempDir(), "test-after-ci.sh")
 	count := script + ".count"
-	commitTrustedRepoConfig(t, h, fmt.Sprintf("commands:\n  test: %q\nci:\n  rerun_transient: 0\n  revalidate_repairs: false\nauto_fix:\n  ci: 1\n", "sh "+shellQuote(script)))
+	commitTrustedRepoConfig(t, h, fmt.Sprintf("commands:\n  test: %q\nci:\n  rerun_transient: 0\n  revalidate_repairs: true\nauto_fix:\n  ci: 1\n", "sh "+shellQuote(script)))
 	initFromOwnWorktree(t, h, "init-published-rewind")
 	base := h.UpstreamBranchSHA("main")
 	branch := "feature/published-ci-restart"
@@ -366,23 +367,6 @@ func TestTargetAdvancePublishedCIRestartJourney(t *testing.T) {
     structured:
       summary: "repair the fixture"
       code_change_needed: true
-  - match: "Review the code changes and return structured findings"
-    structured:
-      findings:
-        - id: ci-claim
-          severity: error
-          action: auto-fix
-          description: "fixture CI check reports failure"
-          review_scope: source
-          support:
-            claim_type: ci
-            ci:
-              check_id: "1"
-              head_sha: "` + head + `"
-      summary: "CI owner must verify this claim"
-      risk_level: high
-      risk_rationale: "CI claim needs provider proof"
-      risk_scope: source-or-external
 `
 	if err := os.WriteFile(scenario, []byte(strings.Replace(string(old), "actions:\n", custom, 1)), 0600); err != nil {
 		t.Fatal(err)
@@ -400,13 +384,7 @@ func TestTargetAdvancePublishedCIRestartJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	checks := `{"data":{"repository":{"object":{"statusCheckRollup":{"contexts":{"nodes":[{"__typename":"CheckRun","databaseId":1,"name":"fixture-build","status":"COMPLETED","conclusion":"FAILURE","checkSuite":{"app":{"slug":"fixture-ci"}}}],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}}`
-	// The repaired head gets a new successful CI result. Repeating the old
-	// failure forever correctly keeps the monitor waiting and never reaches
-	// the support-owner refresh that requests a new Review.
-	greenChecks := strings.Replace(checks, `"conclusion":"FAILURE"`, `"conclusion":"SUCCESS"`, 1)
-	wrapper := "#!/bin/sh\ncase \"$*\" in\n*'statusCheckRollup'*)\n" +
-		"current=$(git --git-dir=" + shellQuote(h.UpstreamDir) + " rev-parse refs/heads/" + branch + ") || exit 1\n" +
-		"if [ \"$current\" = " + shellQuote(head) + " ]; then printf '%s\\n' " + shellQuote(checks) + "; else printf '%s\\n' " + shellQuote(greenChecks) + "; fi\nexit 0 ;;\n" +
+	wrapper := "#!/bin/sh\ncase \"$*\" in\n*'statusCheckRollup'*) printf '%s\\n' " + shellQuote(checks) + "; exit 0 ;;\n" +
 		"*'mergeable,mergeStateStatus'*) printf 'MERGEABLE CLEAN\\n'; exit 0 ;;\nesac\nexec " + shellQuote(delegate) + " \"$@\"\n"
 	if err := os.WriteFile(gh, []byte(wrapper), 0700); err != nil {
 		t.Fatal(err)
@@ -425,8 +403,8 @@ func TestTargetAdvancePublishedCIRestartJourney(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.PushGeneration == nil || *stored.PushGeneration < 2 {
-		t.Fatalf("CI repair was not published before restart: %+v", stored.PushGeneration)
+	if stored.PushGeneration == nil || *stored.PushGeneration != 1 || stored.LastPushedSHA == nil || *stored.LastPushedSHA != head || h.UpstreamBranchSHA(branch) != head || stored.HeadSHA == head {
+		t.Fatalf("restart must retain the initial publication and hold the repair locally: %+v", stored)
 	}
 	if h.UpstreamBranchSHA("main") != target {
 		t.Fatal("Test after CI restart never advanced the target")
