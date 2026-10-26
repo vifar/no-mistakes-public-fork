@@ -21,7 +21,7 @@ func TestTargetAdvanceUpgradeProvenanceJourney(t *testing.T) {
 	for _, provenance := range []string{"legacy unknown", "confirmed attempt", "skipped Rebase", "status attempt"} {
 		t.Run(provenance, func(t *testing.T) {
 			h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: cleanReviewScenario(t)})
-			commitTrustedRepoConfig(t, h, "commands:\n  test: 'false'\nauto_fix:\n  test: 0\n")
+			commitTrustedRepoConfig(t, h, "rebase:\n  integrate: always\ncommands:\n  test: 'false'\nauto_fix:\n  test: 0\n")
 			initFromOwnWorktree(t, h, "init-upgrade-provenance")
 			const branch = "feature/upgrade-provenance"
 			h.CommitChange(branch, "feature.txt", "unpublished work\n", "submit feature")

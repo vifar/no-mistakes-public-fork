@@ -26,7 +26,7 @@ func TestTargetAdvanceReviewCarryLiveJourney(t *testing.T) {
 		t.Run(fmt.Sprintf("outstanding=%t", outstanding), func(t *testing.T) {
 			scenario := cleanReviewScenario(t)
 			h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: scenario})
-			commitTrustedRepoConfig(t, h, "auto_fix:\n  review: 1\n")
+			commitTrustedRepoConfig(t, h, "rebase:\n  integrate: always\nauto_fix:\n  review: 1\n")
 			base := h.UpstreamBranchSHA("main")
 			target := h.CommitChange("main", "landed.txt", "landed target\n", "prepare target")
 			gitIn(t, h, h.WorkDir, "push", "origin", target+":refs/heads/prepared-target")

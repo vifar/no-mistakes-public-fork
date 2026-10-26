@@ -687,6 +687,7 @@ func rebaseCustodyScenario(t *testing.T) string {
 // advanced base into the worktree, and anchors the exact pre-recovery commits.
 func TestAxiCustodyRecoveryAfterRebaseJourney(t *testing.T) {
 	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: rebaseCustodyScenario(t)})
+	commitTrustedRepoConfig(t, h, "rebase:\n  integrate: always\n")
 	h.CommitChange("init-rebase-recover", "seed.txt", "seed\n", "seed rebase recover init")
 	initWorktree := h.AddWorktree("init-rebase-recover")
 	if out, err := h.RunInDir(initWorktree, "init"); err != nil {

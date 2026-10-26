@@ -17,7 +17,8 @@ import (
 
 // The acceptance oracle is a terminal completed run at the original qualified
 // comparison after the forge reports an exact, independently constructed Git
-// merge. A corrupt result or an unobserved advanced target must fail closed.
+// merge. Issue #161 also permits an unobserved pure advance proven by the
+// merge's first parent; a corrupt result or moved merge base must fail closed.
 // Only the external forge and agent are simulated; the binary, daemon,
 // readiness transitions, comparison persistence, and terminal guard are real.
 func TestTargetAdvanceTerminalMergeLiveJourney(t *testing.T) {
@@ -144,7 +145,7 @@ func TestTargetAdvanceTerminalMergeLiveJourney(t *testing.T) {
 			writeStatefulGH(t, j.statePath, state)
 			terminal := j.h.WaitForRun(branch, 90*time.Second)
 			want := types.RunCompleted
-			if mode == "tampered result" || mode == "corrupt rebase" || mode == "missing observation" {
+			if mode == "tampered result" || mode == "corrupt rebase" || mode == "missing observation" && stacked {
 				want = types.RunFailed
 			}
 			if terminal.Status != want {

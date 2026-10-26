@@ -37,7 +37,7 @@ func TestPushTargetAdvanceLiveJourney(t *testing.T) {
 			j := newScopeJourney(t, SetupOpts{Agent: "claude", Scenario: cleanReviewScenario(t)})
 			h, state := j.h, j.statePath
 			j.setForge(forgeState{Checks: []forgeCheck{greenCheck("build")}})
-			commitTrustedRepoConfig(t, h, "commands:\n  test: 'true'\n  lint: 'true'\nauto_fix:\n  rebase: 0\n")
+			commitTrustedRepoConfig(t, h, "rebase:\n  integrate: always\ncommands:\n  test: 'true'\n  lint: 'true'\nauto_fix:\n  rebase: 0\n")
 			base := h.UpstreamBranchSHA("main")
 			if kind == "rewritten target" {
 				gitIn(t, h, h.WorkDir, "reset", "--hard", base+"^")

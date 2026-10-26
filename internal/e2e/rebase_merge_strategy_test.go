@@ -49,8 +49,7 @@ func initFromOwnWorktree(t *testing.T, h *Harness, name string) {
 	}
 }
 
-// advanceMain moves the default branch under the gated branch and publishes it,
-// which is the only condition under which the rebase step integrates anything.
+// advanceMain moves the default branch under the gated branch and publishes it.
 func advanceMain(t *testing.T, h *Harness, path, content, message string) string {
 	t.Helper()
 	sha := h.CommitChange("main", path, content, message)
@@ -103,10 +102,10 @@ func mergeOfOnFirstParentChain(t *testing.T, h *Harness, dir, rev, wantFirst, wa
 
 // TestRebaseMergeStrategyPublishesAMergeOfTheReviewedHeadJourney is the opt-in
 // contract end to end. A repository whose default branch sets
-// rebase.strategy: merge pushes a branch whose base has moved, and the head the
-// pipeline publishes must be a merge commit whose FIRST parent is the head the
-// operator submitted - the property the CI step's continuity rule and the
-// attestation's head binding both read.
+// rebase.strategy: merge and rebase.integrate: always pushes a branch whose
+// base has moved, and the published head must be a merge commit whose FIRST
+// parent is the submitted head - the property the CI continuity rule and
+// attestation head binding both read.
 //
 // The remote is configured to refuse any non-fast-forward update to that branch
 // before the run, which is what makes the publication claim testable rather
@@ -114,7 +113,7 @@ func mergeOfOnFirstParentChain(t *testing.T, h *Harness, dir, rev, wantFirst, wa
 // rewrite the branch the remote already carries.
 func TestRebaseMergeStrategyPublishesAMergeOfTheReviewedHeadJourney(t *testing.T) {
 	h := NewHarness(t, SetupOpts{Agent: "claude"})
-	commitTrustedRepoConfig(t, h, "rebase:\n  strategy: merge\n")
+	commitTrustedRepoConfig(t, h, "rebase:\n  integrate: always\n  strategy: merge\n")
 	initFromOwnWorktree(t, h, "init-merge-strategy")
 
 	const branch = "feature/merge-strategy"
@@ -172,12 +171,13 @@ func TestRebaseMergeStrategyPublishesAMergeOfTheReviewedHeadJourney(t *testing.T
 
 // TestRebaseMergeStrategyPushedBranchCannotSelfSelectJourney is the trust
 // boundary, driven rather than reasoned about: the default branch says nothing
-// about rebase.strategy, and the pushed branch declares merge in its own
-// .no-mistakes.yaml. The run must integrate by rebasing anyway, so a
-// contributor cannot opt their own branch into a different evidence shape than
-// the maintainer chose.
+// about rebase.strategy, opts into always integration, and the pushed branch
+// declares merge in its own .no-mistakes.yaml. The run must integrate by
+// rebasing anyway, so a contributor cannot opt their own branch into a
+// different evidence shape than the maintainer chose.
 func TestRebaseMergeStrategyPushedBranchCannotSelfSelectJourney(t *testing.T) {
 	h := NewHarness(t, SetupOpts{Agent: "claude"})
+	commitTrustedRepoConfig(t, h, "rebase:\n  integrate: always\n")
 	initFromOwnWorktree(t, h, "init-self-select")
 
 	const branch = "feature/self-select-merge"
@@ -470,9 +470,10 @@ func TestRebaseMergeStrategyRejectsAnUnconcludedMergeJourney(t *testing.T) {
 // between them is the trusted .no-mistakes.yaml.
 func TestRebaseMergeStrategyGlobalDefaultAndTrustedOverrideJourney(t *testing.T) {
 	h := NewHarness(t, SetupOpts{Agent: "claude", GlobalConfigExtra: "rebase:\n  strategy: merge"})
+	commitTrustedRepoConfig(t, h, "rebase:\n  integrate: always\n")
 	initFromOwnWorktree(t, h, "init-global-default")
 
-	// Half one: the repository is silent, so the operator's default decides.
+	// Half one: the repository leaves strategy unset, so the global default decides.
 	const inherits = "feature/inherits-global-merge"
 	inheritsSubmitted := h.CommitChange(inherits, "inherits.txt", "inherits\n", "add work that inherits the global default")
 	advanceMain(t, h, "advance-one.txt", "one\n", "advance main under the inheriting branch")
@@ -493,7 +494,7 @@ func TestRebaseMergeStrategyGlobalDefaultAndTrustedOverrideJourney(t *testing.T)
 
 	// Half two: the maintainer's trusted config picks rebase explicitly, which
 	// has to beat the operator's global merge.
-	commitTrustedRepoConfig(t, h, "rebase:\n  strategy: rebase\n")
+	commitTrustedRepoConfig(t, h, "rebase:\n  integrate: always\n  strategy: rebase\n")
 	const overrides = "feature/trusted-override-rebase"
 	overridesSubmitted := h.CommitChange(overrides, "overrides.txt", "overrides\n", "add work under the trusted override")
 	advanceMain(t, h, "advance-two.txt", "two\n", "advance main under the overriding branch")

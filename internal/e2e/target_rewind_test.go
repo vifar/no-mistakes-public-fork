@@ -33,7 +33,7 @@ func TestTargetAdvanceRewindJourney(t *testing.T) {
 			script := filepath.Join(root, "advance.sh")
 			count := filepath.Join(root, "count")
 			prep := filepath.Join(root, "prepared")
-			extra := fmt.Sprintf("commands:\n  prepare: %q\n  test: %q\nrebase:\n  max_target_advance_rewinds: 3\nauto_fix:\n  rebase: 0\n", "printf 'prepared\\n' >> "+shellQuote(prep), "sh "+shellQuote(script))
+			extra := fmt.Sprintf("commands:\n  prepare: %q\n  test: %q\nrebase:\n  integrate: always\n  max_target_advance_rewinds: 3\nauto_fix:\n  rebase: 0\n", "printf 'prepared\\n' >> "+shellQuote(prep), "sh "+shellQuote(script))
 			commitTrustedRepoConfig(t, h, extra)
 			base := h.UpstreamBranchSHA("main")
 			branch := "feature/target-rewind"
@@ -203,7 +203,7 @@ func TestTargetAdvanceExistingPRJourney(t *testing.T) {
 			state := setupStatefulGitHub(t, h)
 			release := filepath.Join(t.TempDir(), "release-test")
 			command := "while [ ! -f " + shellQuote(release) + " ]; do sleep 0.05; done"
-			commitTrustedRepoConfig(t, h, fmt.Sprintf("commands:\n  test: %q\nno_ci: true\n", command))
+			commitTrustedRepoConfig(t, h, fmt.Sprintf("rebase:\n  integrate: always\ncommands:\n  test: %q\nno_ci: true\n", command))
 			initFromOwnWorktree(t, h, "init-existing-rewind")
 			branch := "feature/existing-rewind"
 			head := h.CommitChange(branch, "feature.txt", "feature\n", "add feature")
@@ -341,7 +341,7 @@ func TestTargetAdvancePublishedCIRestartJourney(t *testing.T) {
 	setupStatefulGitHub(t, h)
 	script := filepath.Join(t.TempDir(), "test-after-ci.sh")
 	count := script + ".count"
-	commitTrustedRepoConfig(t, h, fmt.Sprintf("commands:\n  test: %q\nci:\n  rerun_transient: 0\n  revalidate_repairs: false\nauto_fix:\n  ci: 1\n", "sh "+shellQuote(script)))
+	commitTrustedRepoConfig(t, h, fmt.Sprintf("rebase:\n  integrate: always\ncommands:\n  test: %q\nci:\n  rerun_transient: 0\n  revalidate_repairs: false\nauto_fix:\n  ci: 1\n", "sh "+shellQuote(script)))
 	initFromOwnWorktree(t, h, "init-published-rewind")
 	base := h.UpstreamBranchSHA("main")
 	branch := "feature/published-ci-restart"
@@ -456,6 +456,7 @@ func TestTargetAdvanceGateIdentityRecoveryJourney(t *testing.T) {
 			h.dumpDebugState()
 		}
 	})
+	commitTrustedRepoConfig(t, h, "rebase:\n  integrate: always\n")
 	const branch = "feature/rewind-gate-recovery"
 	a := gateJourneyStart(t, h, branch)
 	gateJourneyAwaitSlots(t, h, func(s ipc.SlotsResult) bool { return s.InUse == 0 && s.ParkedReleased == 1 })

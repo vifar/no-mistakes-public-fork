@@ -33,7 +33,7 @@ func TestLeftoverSnapshotRecoveryLiveJourney(t *testing.T) {
 			if kind != "clean" && kind != "write_failure" && kind != "conflict" {
 				config += "protected_paths: [feature.txt, module]\n"
 			}
-			commitTrustedRepoConfig(t, h, config)
+			commitTrustedRepoConfig(t, h, "rebase:\n  integrate: always\n"+config)
 			if kind == "gitlink" {
 				old := h.UpstreamBranchSHA("main")
 				gitIn(t, h, h.WorkDir, "update-index", "--add", "--cacheinfo", "160000,"+old+",module")

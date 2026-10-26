@@ -28,7 +28,7 @@ func TestTargetAdvanceDuringReviewFixLiveJourney(t *testing.T) {
 			t.Run(fmt.Sprintf("%s/conflict=%t", strategy, conflict), func(t *testing.T) {
 				scenario := cleanReviewScenario(t)
 				h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: scenario})
-				commitTrustedRepoConfig(t, h, "rebase:\n  strategy: "+strategy+"\nauto_fix:\n  rebase: 0\n")
+				commitTrustedRepoConfig(t, h, "rebase:\n  integrate: always\n  strategy: "+strategy+"\nauto_fix:\n  rebase: 0\n")
 				base := h.UpstreamBranchSHA("main")
 				path := "landed.txt"
 				if conflict {
@@ -248,7 +248,7 @@ func acceptedTestGapScenario(t *testing.T) string {
 
 func TestTargetAdvanceAcceptedGapRecoversLiveJourney(t *testing.T) {
 	j := newScopeJourney(t, SetupOpts{Agent: "claude", Scenario: acceptedTestGapScenario(t)})
-	j.setTrusted("commands:\n  test: 'true'\n  lint: 'true'\n")
+	j.setTrusted("rebase:\n  integrate: always\ncommands:\n  test: 'true'\n  lint: 'true'\n")
 	healthy := forgeState{Protection: &forgeEndpoint{Body: []byte(`{"strict":false,"contexts":[],"checks":[]}`)}, Checks: []forgeCheck{greenCheck("build")}}
 	j.setForge(healthy)
 	j.init()
@@ -385,7 +385,7 @@ func TestTargetAdvancePublishedGuardsLiveJourney(t *testing.T) {
 		t.Run(guard, func(t *testing.T) {
 			strict := guard == "strict shipping"
 			j := newScopeJourney(t, SetupOpts{Agent: "claude", Scenario: cleanReviewScenario(t)})
-			j.setTrusted("commands:\n  test: 'true'\n  lint: 'true'\n")
+			j.setTrusted("rebase:\n  integrate: always\ncommands:\n  test: 'true'\n  lint: 'true'\n")
 			healthy := forgeState{Protection: &forgeEndpoint{Body: []byte(`{"strict":false,"contexts":[],"checks":[]}`)}, Checks: []forgeCheck{greenCheck("build")}}
 			j.setForge(healthy)
 			j.init()
