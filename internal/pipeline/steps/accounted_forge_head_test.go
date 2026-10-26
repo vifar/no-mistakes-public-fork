@@ -210,18 +210,33 @@ func TestAccountedForgeHeadPushCorrection(t *testing.T) {
 				t.Fatal(err)
 			}
 			recordReviewApproval(t, c, c.Run.HeadSHA)
-			c.PRTarget = &pipeline.PRTargetSelection{PRURL: receipt.PRURL, SourceRepo: receipt.SourceRepo, SourceBranch: receipt.SourceBranch, TargetBranch: receipt.TargetBranch, ForgeHeadSHA: c.Run.HeadSHA}
+			observed := c.Run.HeadSHA
 			if foreign {
-				c.PRTarget.ForgeHeadSHA = foreignForgeHead(t, c)
+				observed = foreignForgeHead(t, c)
+			}
+			// Push reads live forge facts after committing its correction.
+			c.Env = append(c.Env, "FAKE_CLI_PR_FACTS_JSON="+mutationPRFactsJSON("open", observed, "main"))
+			before, err := c.DB.GetRunPRContext(c.Run.ID)
+			if err != nil {
+				t.Fatal(err)
 			}
 			if err = os.WriteFile(filepath.Join(c.WorkDir, "correction.txt"), []byte("correction\n"), 0600); err != nil {
 				t.Fatal(err)
 			}
 			outcome, err := (&PushStep{}).Execute(c)
-			t.Logf("push pinned=%s observed=%s local=%s outcome=%+v err=%v", stale.ForgeHeadSHA, c.PRTarget.ForgeHeadSHA, c.Run.HeadSHA, outcome, err)
+			after, readErr := c.DB.GetRunPRContext(c.Run.ID)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			published := gitCmd(t, c.WorkDir, "rev-parse", "HEAD")
+			remote := gitCmd(t, resolvePushURL(c), "rev-parse", "refs/heads/feature")
+			t.Logf("push pinned=%s observed=%s local=%s->%s remote=%s generation=%d->%d outcome=%+v err=%v", stale.ForgeHeadSHA, observed, before.LocalHeadSHA, published, remote, before.Generation, after.Generation, outcome, err)
 			if foreign {
-				if err == nil {
-					t.Fatal("foreign forge head accepted while committing")
+				if err == nil || !strings.Contains(err.Error(), "unaccounted pull request head") || *after != *before || remote != before.LocalHeadSHA {
+					t.Fatalf("foreign forge head must preserve receipt and remote: receipt=%+v err=%v", after, err)
+				}
+				if published == before.LocalHeadSHA || gitCmd(t, c.WorkDir, "show", "HEAD:correction.txt") != "correction" {
+					t.Fatal("foreign observation lost the correction commit")
 				}
 				return
 			}
@@ -230,10 +245,8 @@ func TestAccountedForgeHeadPushCorrection(t *testing.T) {
 			}
 			// This fixture's push target is local. Preserve its existing policy
 			// rather than importing #101's separate GitHub re-review behavior.
-			published := gitCmd(t, c.WorkDir, "rev-parse", "HEAD")
-			target := resolvePushURL(c)
-			if got := gitCmd(t, target, "rev-parse", "refs/heads/feature"); got != published {
-				t.Fatalf("published head=%s want=%s", got, published)
+			if remote != published || after.LocalHeadSHA != published || after.ForgeHeadSHA != observed || after.Generation != before.Generation+1 {
+				t.Fatalf("accounted correction was not bound and published: receipt=%+v remote=%s want=%s", after, remote, published)
 			}
 			run, readErr := c.DB.GetRun(c.Run.ID)
 			if readErr != nil || run.LastPushedSHA == nil || *run.LastPushedSHA != published {
