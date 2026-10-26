@@ -1,7 +1,6 @@
 package steps
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -874,6 +873,9 @@ func verifyCurrentPRComparison(sctx *pipeline.StepContext, host scm.Host, select
 // the reviewed change and nothing else. A merge commit without that parent
 // shape (a rebase merge's last replayed commit, for one) fails closed.
 func mergedOntoAdvancedTarget(sctx *pipeline.StepContext, receipt *db.PRContext, mergeSHA, actualTree string) (bool, error) {
+	if !keepsCleanHeads(sctx) {
+		return false, nil
+	}
 	parent, err := git.Run(sctx.Ctx, sctx.WorkDir, "rev-parse", "--verify", "--quiet", mergeSHA+"^1^{commit}")
 	if err != nil || parent == "" {
 		return false, nil
@@ -896,21 +898,15 @@ func mergedOntoAdvancedTarget(sctx *pipeline.StepContext, receipt *db.PRContext,
 	if tree != actualTree {
 		return false, nil
 	}
-	// The tree alone cannot tell a squash from the last commit of a rebase
-	// merge, whose first parent is an earlier REPLAYED commit that never had
-	// its own proof. The merge commit's own change must therefore be the whole
-	// reviewed change, byte for byte. A squash or merge commit carries all of
-	// it; a rebase merge's last commit carries only part, and fails closed, as
-	// does a target that also edited the reviewed files.
-	landed, err := git.RunRaw(sctx.Ctx, sctx.WorkDir, "diff", "--no-ext-diff", "--no-textconv", "--binary", "--full-index", parent, mergeSHA)
+	reversed, err := git.Run(sctx.Ctx, sctx.WorkDir, "merge-tree", "--write-tree", "--merge-base="+receipt.LocalHeadSHA, mergeSHA, receipt.MergeBaseSHA)
 	if err != nil {
-		return false, fmt.Errorf("read the merged PR's own change: %w", err)
+		return false, fmt.Errorf("cannot reverse the reviewed change from the merged result: %w", err)
 	}
-	reviewed, err := git.RunRaw(sctx.Ctx, sctx.WorkDir, "diff", "--no-ext-diff", "--no-textconv", "--binary", "--full-index", receipt.MergeBaseSHA, receipt.LocalHeadSHA)
+	parentTree, err := git.Run(sctx.Ctx, sctx.WorkDir, "rev-parse", parent+"^{tree}")
 	if err != nil {
-		return false, fmt.Errorf("read the reviewed change: %w", err)
+		return false, fmt.Errorf("read the merge parent's tree: %w", err)
 	}
-	if !bytes.Equal(landed, reviewed) {
+	if reversed != parentTree {
 		return false, nil
 	}
 	if sctx.Log != nil {

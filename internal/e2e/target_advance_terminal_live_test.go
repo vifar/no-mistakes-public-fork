@@ -145,7 +145,7 @@ func TestTargetAdvanceTerminalMergeLiveJourney(t *testing.T) {
 			writeStatefulGH(t, j.statePath, state)
 			terminal := j.h.WaitForRun(branch, 90*time.Second)
 			want := types.RunCompleted
-			if mode == "tampered result" || mode == "corrupt rebase" || mode == "missing observation" && stacked {
+			if mode == "tampered result" || mode == "corrupt rebase" || mode == "missing observation" {
 				want = types.RunFailed
 			}
 			if terminal.Status != want {

@@ -210,6 +210,7 @@ func TestAttestationComparisonHoldsOnlyAPureTargetAdvance(t *testing.T) {
 // reproduces the merge commit's tree exactly.
 func TestMergedOntoAdvancedTargetProvesOnlyTheReviewedChange(t *testing.T) {
 	c, _ := rewindFixture(t)
+	c.Config.Rebase.Integrate = config.RebaseIntegrateOnConflict
 	receipt, err := c.DB.GetRunPRContext(c.Run.ID)
 	if err != nil || receipt == nil {
 		t.Fatalf("receipt: %+v %v", receipt, err)
@@ -227,6 +228,14 @@ func TestMergedOntoAdvancedTargetProvesOnlyTheReviewedChange(t *testing.T) {
 		proven, err := mergedOntoAdvancedTarget(c, receipt, sha, tree)
 		if err != nil || !proven {
 			t.Fatalf("the reviewed change on an advanced target was not proven: %v %v", proven, err)
+		}
+	})
+	t.Run("always refuses an unobserved advance", func(t *testing.T) {
+		c.Config.Rebase.Integrate = config.RebaseIntegrateAlways
+		defer func() { c.Config.Rebase.Integrate = config.RebaseIntegrateOnConflict }()
+		sha, tree := squash(t, advanced, reviewedTree)
+		if proven, err := mergedOntoAdvancedTarget(c, receipt, sha, tree); err != nil || proven {
+			t.Fatalf("always accepted an unobserved target: %v %v", proven, err)
 		}
 	})
 	t.Run("extra content in the merge commit", func(t *testing.T) {
@@ -280,5 +289,54 @@ func TestMergedOntoAdvancedTargetProvesOnlyTheReviewedChange(t *testing.T) {
 	})
 	if strings.TrimSpace(reviewedTree) == "" {
 		t.Fatal("empty reviewed tree")
+	}
+}
+
+func TestMergedOntoAdvancedTargetWithDistantSameFileEdit(t *testing.T) {
+	for _, mode := range []string{"merge", "squash"} {
+		t.Run(mode, func(t *testing.T) {
+			c, _ := rewindFixture(t)
+			c.Config.Rebase.Integrate = config.RebaseIntegrateOnConflict
+			gitCmd(t, c.WorkDir, "checkout", "main")
+			original := "first\n" + strings.Repeat("unchanged\n", 40) + "last\n"
+			write := func(content string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(c.WorkDir, "shared.txt"), []byte(content), 0600); err != nil {
+					t.Fatal(err)
+				}
+				gitCmd(t, c.WorkDir, "add", "shared.txt")
+				gitCmd(t, c.WorkDir, "commit", "-m", "edit shared file")
+			}
+			write(original)
+			base := gitCmd(t, c.WorkDir, "rev-parse", "HEAD")
+			gitCmd(t, c.WorkDir, "checkout", "-B", "feature", base)
+			write(strings.Replace(original, "first\n", "reviewed\n", 1))
+			head := gitCmd(t, c.WorkDir, "rev-parse", "HEAD")
+			gitCmd(t, c.WorkDir, "checkout", "main")
+			write(strings.Replace(original, "last\n", "target\n", 1))
+			parent := gitCmd(t, c.WorkDir, "rev-parse", "HEAD")
+			if mode == "merge" {
+				gitCmd(t, c.WorkDir, "merge", "--no-ff", "feature", "-m", "forge merge")
+			} else {
+				gitCmd(t, c.WorkDir, "merge", "--squash", "feature")
+				gitCmd(t, c.WorkDir, "commit", "-m", "forge squash")
+			}
+			merged := gitCmd(t, c.WorkDir, "rev-parse", "HEAD")
+			tree := gitCmd(t, c.WorkDir, "rev-parse", "HEAD^{tree}")
+			got, err := os.ReadFile(filepath.Join(c.WorkDir, "shared.txt"))
+			want := "reviewed\n" + strings.Repeat("unchanged\n", 40) + "target\n"
+			if err != nil || string(got) != want {
+				t.Fatalf("independent merged-file oracle: %q %v", got, err)
+			}
+			landed := gitCmd(t, c.WorkDir, "diff", "--full-index", parent, merged)
+			reviewed := gitCmd(t, c.WorkDir, "diff", "--full-index", base, head)
+			if landed == reviewed {
+				t.Fatal("fixture must expose the byte-identical diff regression")
+			}
+			receipt := &db.PRContext{PRContextCandidate: db.PRContextCandidate{TargetSHA: base, MergeBaseSHA: base, LocalHeadSHA: head}}
+			if proven, err := mergedOntoAdvancedTarget(c, receipt, merged, tree); err != nil || !proven {
+				t.Fatalf("clean distant same-file edit refused: %v %v", proven, err)
+			}
+		})
 	}
 }
