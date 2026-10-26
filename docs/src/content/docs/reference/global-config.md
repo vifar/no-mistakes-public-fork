@@ -615,7 +615,7 @@ How long an ordinary run tolerates a missing current-head PR comparison receipt 
 | Type    | positive Go duration    |
 | Default | `10m`                   |
 
-A CI repair the run published itself does not leave the receipt missing: the next otherwise-ready poll re-pins it to the published repair head, once the live PR reports that head (issue #87).
+The [CI step reference](/no-mistakes/reference/pipeline-steps/#ci) owns the proof required to advance a receipt after the run publishes its own repair.
 
 This is a global-only proof bound, independent of `ci_timeout` even when that timeout is unlimited. It starts at the first otherwise-ready observation missing the receipt, and fails with `ci-readiness-receipt-missing` on a subsequent such observation at or after the bound. The error names the full head and is recorded in `axi status`. Recover branch custody through the offered `axi sync` action, then re-run validation; this failure does not waive comparison proof or authorize a blind `axi respond`.
 
