@@ -22,7 +22,7 @@ func TestIssue100PublishedTargetTimeoutLiveJourney(t *testing.T) {
 	for _, read := range []string{"protection/required_status_checks", "mergeable,mergeStateStatus"} {
 		t.Run(read, func(t *testing.T) {
 			j := newScopeJourney(t, SetupOpts{Agent: "claude", Scenario: cleanReviewScenario(t)})
-			j.setTrusted("commands:\n  test: 'true'\n  lint: 'true'\n")
+			j.setTrusted("rebase:\n  integrate: always\ncommands:\n  test: 'true'\n  lint: 'true'\n")
 			j.setForge(forgeState{Protection: &forgeEndpoint{Body: []byte(`{"strict":false,"contexts":[],"checks":[]}`)}, Checks: []forgeCheck{greenCheck("build")}})
 			j.init()
 			const branch = "feature/issue-100-timeout"

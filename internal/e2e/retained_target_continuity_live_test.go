@@ -22,7 +22,7 @@ func TestRetainedTargetContinuityLiveJourney(t *testing.T) {
 	for _, name := range []string{"open sibling", "open rollback", "open consecutive", "merge rollback", "squash rollback", "rebase rollback", "merge included", "squash included", "rebase included"} {
 		t.Run(name, func(t *testing.T) {
 			j := newScopeJourney(t, SetupOpts{Agent: "claude", Scenario: cleanReviewScenario(t)})
-			j.setTrusted("commands:\n  test: 'true'\n  lint: 'true'\n")
+			j.setTrusted("rebase:\n  integrate: always\ncommands:\n  test: 'true'\n  lint: 'true'\n")
 			j.setForge(forgeState{Protection: &forgeEndpoint{Body: []byte(`{"strict":false,"contexts":[],"checks":[]}`)}, Checks: []forgeCheck{greenCheck("build")}})
 			j.init()
 			const branch = "feature/retained-continuity"

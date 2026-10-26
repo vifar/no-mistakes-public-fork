@@ -22,7 +22,7 @@ import (
 // must permit recovery only after new protection and mergeability checks.
 func TestTargetAdvanceAcceptedGapComparisonOutageLiveJourney(t *testing.T) {
 	j := newScopeJourney(t, SetupOpts{Agent: "claude", Scenario: acceptedTestGapScenario(t)})
-	j.setTrusted("commands:\n  test: 'true'\n  lint: 'true'\n")
+	j.setTrusted("rebase:\n  integrate: always\ncommands:\n  test: 'true'\n  lint: 'true'\n")
 	healthy := forgeState{Protection: &forgeEndpoint{Body: []byte(`{"strict":false,"contexts":[],"checks":[]}`)}, Checks: []forgeCheck{greenCheck("build")}}
 	j.setForge(healthy)
 	j.init()

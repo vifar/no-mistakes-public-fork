@@ -469,7 +469,7 @@ func TestDocumentJourneyHiddenIndexPrecedesCachedCompletion(t *testing.T) {
 func TestDocumentJourneyTrustedLimits(t *testing.T) {
 	for _, limit := range []int{-1, 0} {
 		t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
-			h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: documentJourneyScenarioWith(t, "", documentJourneyAction("README.md", "must not apply\n"), documentJourneyCapGapAction())})
+			h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: documentJourneyScenarioWith(t, "", documentJourneyAction("README.md", "explicit repair\n", "remaining gap"), documentJourneyCapGapAction())})
 			commitTrustedRepoConfig(t, h, fmt.Sprintf("document:\n  max_commits_per_run: %d\ncommands:\n  lint: 'true'\n", limit))
 			initFromOwnWorktree(t, h, "init-document-limit")
 			const branch = "feature/document-limit"
@@ -510,10 +510,22 @@ func TestDocumentJourneyTrustedLimits(t *testing.T) {
 			gateJourneyDaemon(t, h, "stop")
 			gateJourneyDaemon(t, h, "start")
 			parked = documentJourneyNextGate(t, h, parked.ID, types.StepDocument, "")
-			// Recovery must preserve the zero budget. Do not send fix here:
-			// that response explicitly authorizes one extra repair commit.
+			// Recovery must preserve the zero automatic budget before an
+			// explicit fix response authorizes one extra repair commit.
 			if parked.HeadSHA != submitted || len(documentJourneyPasses(t, h, parked.ID)) != 0 {
 				t.Fatal("recovery lost trusted budget")
+			}
+			previous := documentJourneyFix(t, h, parked)
+			parked = documentJourneyNextGate(t, h, parked.ID, types.StepDocument, previous)
+			// Recovery preserves the trusted zero automatic budget, while
+			// the explicit fix response earns one repair commit (#188).
+			passes := documentJourneyPasses(t, h, parked.ID)
+			if len(passes) != 1 || passes[0].CommitCount != 1 || parked.HeadSHA == submitted {
+				t.Fatalf("explicit fix did not earn exactly one repair commit: %+v", passes)
+			}
+			worktree := paths.WithRoot(h.NMHome).WorktreeDir(parked.RepoID, parked.ID)
+			if got := gitIn(t, h, worktree, "show", "HEAD:README.md"); got != "explicit repair" {
+				t.Fatalf("explicit repair did not land: %q", got)
 			}
 			documentJourneyStatus(t, h, parked.ID)
 		})

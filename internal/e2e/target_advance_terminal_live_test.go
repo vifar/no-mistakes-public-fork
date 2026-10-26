@@ -27,7 +27,7 @@ func TestTargetAdvanceTerminalMergeLiveJourney(t *testing.T) {
 			mode := strings.TrimPrefix(name, "stacked ")
 			stacked := mode != name
 			j := newScopeJourney(t, SetupOpts{Agent: "claude", Scenario: cleanReviewScenario(t)})
-			j.setTrusted("commands:\n  test: 'true'\n  lint: 'true'\n")
+			j.setTrusted("rebase:\n  integrate: always\ncommands:\n  test: 'true'\n  lint: 'true'\n")
 			healthy := forgeState{Protection: &forgeEndpoint{Body: []byte(`{"strict":false,"contexts":[],"checks":[]}`)}, Checks: []forgeCheck{greenCheck("build")}}
 			j.setForge(healthy)
 			j.init()
