@@ -1,6 +1,8 @@
 package db
 
 import (
+	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -155,5 +157,44 @@ func TestRefreshPRForgeHeadMatchesPendingIdentityInsteadOfCreationGeneration(t *
 				t.Fatalf("pending observation=%+v receipt=%+v %v", updated, after, readErr)
 			}
 		})
+	}
+}
+
+func TestPinnedLocalHeadMigratesFromV8AndEmptyMeansNoProof(t *testing.T) {
+	for _, version := range []int{0, 8} {
+		path := filepath.Join(t.TempDir(), "state.sqlite")
+		d, err := Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id := testPRContextRun(t, d)
+		candidate := testPRContextCandidate()
+		candidate.PRURL = "https://github.com/acme/repo/pull/1"
+		candidate.ForgeHeadSHA = strings.Repeat("e", 40)
+		if _, err = d.BindRunPRContext(id, candidate, types.StepRebase); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = d.sql.Exec(fmt.Sprintf("ALTER TABLE run_pr_contexts DROP COLUMN pinned_local_head_sha; PRAGMA user_version=%d", version)); err != nil {
+			t.Fatal(err)
+		}
+		d.Close()
+		d, err = Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := d.GetRunPRContext(id)
+		if err != nil || got == nil || got.PRContextCandidate != candidate || got.PinnedLocalHeads != "" {
+			t.Fatalf("v%d row after upgrade: %+v %v", version, got, err)
+		}
+		moved := candidate
+		moved.LocalHeadSHA = strings.Repeat("9", 40)
+		if _, err = d.BindRunPRContext(id, moved, types.StepRebase); err != nil {
+			t.Fatalf("v%d bind after upgrade: %v", version, err)
+		}
+		got, err = d.GetRunPRContext(id)
+		if err != nil || got.PinnedLocalHeads != candidate.LocalHeadSHA {
+			t.Fatalf("v%d pinned proof: %+v %v", version, got, err)
+		}
+		d.Close()
 	}
 }

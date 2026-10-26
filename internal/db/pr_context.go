@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/sqlitewrite"
@@ -35,9 +36,9 @@ type PRContext struct {
 	// CIQualified survives transient readiness failures only for this exact
 	// comparison. Rebinding a changed comparison clears it.
 	CIQualified bool
-	// PinnedLocalHeadSHA is an earlier local head the run held while the
-	// current forge observation was already pinned. Empty when none.
-	PinnedLocalHeadSHA string
+	// PinnedLocalHeads are the earlier local heads the run held while the
+	// current forge observation was already pinned. Empty means no proof.
+	PinnedLocalHeads string
 }
 
 type PRContextBindResult struct {
@@ -66,7 +67,7 @@ func (d *DB) GetRunPRContext(runID string) (*PRContext, error) {
 	context.SourceRepo = sourceRepo.String
 	context.SourceBranch = sourceBranch.String
 	context.ForgeHeadSHA = forgeHead.String
-	context.PinnedLocalHeadSHA = pinnedLocal.String
+	context.PinnedLocalHeads = pinnedLocal.String
 	return context, nil
 }
 
@@ -128,7 +129,7 @@ func (d *DB) bindRunPRContextOnce(writeCtx context.Context, runID string, candid
 		previous.SourceRepo = sourceRepo.String
 		previous.SourceBranch = sourceBranch.String
 		previous.ForgeHeadSHA = forgeHead.String
-		previous.PinnedLocalHeadSHA = pinnedLocal.String
+		previous.PinnedLocalHeads = pinnedLocal.String
 		if previous.SourceRepo != "" && (candidate.SourceRepo != previous.SourceRepo || candidate.SourceBranch != previous.SourceBranch) {
 			return PRContextBindResult{}, fmt.Errorf("bind run PR context: source identity conflicts with receipt")
 		}
@@ -223,11 +224,11 @@ func (d *DB) bindRunPRContextOnce(writeCtx context.Context, runID string, candid
 		}
 	}
 	ts := now()
-	var pinnedLocalHead string
+	var pinnedLocalHeads []string
 	if !initial && previous.PRURL != "" && previous.ForgeHeadSHA != "" && previous.ForgeHeadSHA == candidate.ForgeHeadSHA {
-		pinnedLocalHead = previous.PinnedLocalHeadSHA
-		if pinnedLocalHead == "" && previous.LocalHeadSHA != candidate.LocalHeadSHA {
-			pinnedLocalHead = previous.LocalHeadSHA
+		pinnedLocalHeads = strings.Fields(previous.PinnedLocalHeads)
+		if previous.LocalHeadSHA != candidate.LocalHeadSHA && !slices.Contains(pinnedLocalHeads, previous.LocalHeadSHA) {
+			pinnedLocalHeads = append(pinnedLocalHeads, previous.LocalHeadSHA)
 		}
 	}
 	if _, err := tx.ExecContext(writeCtx, `INSERT INTO run_pr_contexts (
@@ -245,7 +246,7 @@ func (d *DB) bindRunPRContextOnce(writeCtx context.Context, runID string, candid
 		runID, optionalPRField(candidate.PRURL), optionalPRField(candidate.SourceRepo),
 		optionalPRField(candidate.SourceBranch), optionalPRField(candidate.ForgeHeadSHA),
 		candidate.LocalHeadSHA, candidate.TargetBranch, candidate.TargetSHA,
-		candidate.MergeBaseSHA, candidate.DiffDigest, ts, generation, optionalPRField(pinnedLocalHead)); err != nil {
+		candidate.MergeBaseSHA, candidate.DiffDigest, ts, generation, optionalPRField(strings.Join(pinnedLocalHeads, " "))); err != nil {
 		return PRContextBindResult{}, fmt.Errorf("bind run PR context: write receipt: %w", err)
 	}
 	if candidate.PRURL != "" && recordedPRURL.String == "" {

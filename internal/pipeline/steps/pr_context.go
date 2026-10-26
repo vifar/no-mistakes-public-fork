@@ -339,8 +339,11 @@ func reconcileAccountedForgeHead(sctx *pipeline.StepContext, previous *db.PRCont
 	if err == nil && !accounted && trustedHead != previous.LocalHeadSHA {
 		accounted, err = runAccountsForPRHead(sctx, candidate.ForgeHeadSHA, trustedHead)
 	}
-	if err == nil && !accounted && previous.PinnedLocalHeadSHA != "" {
-		accounted, err = runAccountsForPRHead(sctx, candidate.ForgeHeadSHA, previous.PinnedLocalHeadSHA)
+	for _, pinned := range strings.Fields(previous.PinnedLocalHeads) {
+		if err != nil || accounted {
+			break
+		}
+		accounted, err = runAccountsForPRHead(sctx, candidate.ForgeHeadSHA, pinned)
 	}
 	if err != nil {
 		return nil, err

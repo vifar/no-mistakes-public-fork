@@ -529,7 +529,7 @@ func TestAccountedForgeHeadCatchUpAfterSuccessfulPostRebaseGuard(t *testing.T) {
 			if err != nil || between.LocalHeadSHA != c.Run.HeadSHA || between.ForgeHeadSHA != selected.ForgeHeadSHA {
 				t.Fatalf("post-rebase receipt: %+v %v", between, err)
 			}
-			if between.PinnedLocalHeadSHA != original {
+			if !strings.Contains(between.PinnedLocalHeads, original) {
 				t.Fatalf("pinned proof not retained: %+v", between)
 			}
 			selected.ForgeHeadSHA = map[string]string{"pinned": original, "foreign": foreign}[observation]
@@ -550,5 +550,53 @@ func TestAccountedForgeHeadCatchUpAfterSuccessfulPostRebaseGuard(t *testing.T) {
 				t.Fatalf("delayed catch-up rejected: %+v %v", after, err)
 			}
 		})
+	}
+}
+
+func TestAccountedForgeHeadCatchUpToIntermediateCorrectionAfterRebase(t *testing.T) {
+	c, selected := accountedRewindFixture(t)
+	original := c.Run.HeadSHA
+	gitCmd(t, c.WorkDir, "commit", "--allow-empty", "-m", "Review fix")
+	correction := gitCmd(t, c.WorkDir, "rev-parse", "HEAD")
+	if err := recordPipelineHeadRange(c, original, correction); err != nil {
+		t.Fatal(err)
+	}
+	c.Run.HeadSHA = correction
+	if err := c.DB.UpdateRunHeadSHA(c.Run.ID, correction); err != nil {
+		t.Fatal(err)
+	}
+	c.PRContextAfterStep = true
+	if _, err := GuardPRContext(c, types.StepReview); err != nil {
+		t.Fatalf("review correction with stale forge: %v", err)
+	}
+	target := advanceRewindTarget(t, c)
+	gitCmd(t, c.WorkDir, "rebase", target)
+	rebased := gitCmd(t, c.WorkDir, "rev-parse", "HEAD")
+	c.Run.HeadSHA = rebased
+	if err := c.DB.UpdateRunHeadSHA(c.Run.ID, rebased); err != nil {
+		t.Fatal(err)
+	}
+	if isAncestor(c.Ctx, c.WorkDir, correction, rebased) {
+		t.Fatal("fixture must rewrite the correction head")
+	}
+	c.PRContextRebaseCompleted = true
+	if _, err := GuardPRContext(c, types.StepRebase); err != nil {
+		t.Fatalf("stale forge post-rebase guard: %v", err)
+	}
+	c.PRContextAfterStep, c.PRContextRebaseCompleted = false, false
+	between, err := c.DB.GetRunPRContext(c.Run.ID)
+	if err != nil || between.LocalHeadSHA != rebased || between.ForgeHeadSHA != selected.ForgeHeadSHA {
+		t.Fatalf("post-rebase receipt: %+v %v", between, err)
+	}
+	selected.ForgeHeadSHA = correction
+	setAccountedForgeFacts(t, c, selected)
+	_, err = GuardPRContext(c, types.StepReview)
+	after, readErr := c.DB.GetRunPRContext(c.Run.ID)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	t.Logf("intermediate catch-up pinned=%s observed=%s proofs=%q local=%s generation=%d->%d err=%v", between.ForgeHeadSHA, correction, between.PinnedLocalHeads, rebased, between.Generation, after.Generation, err)
+	if err != nil || after.ForgeHeadSHA != correction || after.Generation != between.Generation {
+		t.Fatalf("intermediate catch-up rejected: %+v %v", after, err)
 	}
 }

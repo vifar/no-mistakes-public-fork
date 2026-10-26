@@ -145,7 +145,8 @@ CREATE TABLE IF NOT EXISTS run_pr_contexts (
     merge_base_sha  TEXT NOT NULL,
     diff_digest     TEXT NOT NULL,
     observed_at     INTEGER NOT NULL,
-    generation      INTEGER NOT NULL CHECK (generation > 0)
+    generation      INTEGER NOT NULL CHECK (generation > 0),
+    pinned_local_head_sha TEXT
 );
 
 CREATE TABLE IF NOT EXISTS step_rounds (
@@ -558,9 +559,6 @@ var migrationStatements = append([]string{
         AND r.review_approved_head_sha=local_head_sha)`,
 	// Separate observation: never replace the original qualification comparison.
 	`ALTER TABLE run_pr_contexts ADD COLUMN retained_target_sha TEXT`,
-	// The local head the run had pinned when the still-current forge observation
-	// was recorded; a later local rewrite must not lose that proof.
-	`ALTER TABLE run_pr_contexts ADD COLUMN pinned_local_head_sha TEXT`,
 }, statusValidationMigrationStatements...)
 
 // additiveMigrationStatements hold the additive schema changes that a
@@ -580,4 +578,7 @@ var additiveMigrationStatements = []string{
 	// refused rather than looped on.
 	`ALTER TABLE runs ADD COLUMN leftover_validation_commits INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE step_rounds ADD COLUMN fix_applied INTEGER`,
+	// The local head the run had pinned when the still-current forge observation
+	// was recorded; a later local rewrite must not lose that proof.
+	`ALTER TABLE run_pr_contexts ADD COLUMN pinned_local_head_sha TEXT`,
 }
