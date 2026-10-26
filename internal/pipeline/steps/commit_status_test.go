@@ -577,6 +577,7 @@ func TestPipeline_GitHubCommitStatuses(t *testing.T) {
 			gitCmd(t, dir, "config", "url."+remote+".insteadOf", "https://github.com/test/repo")
 			sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
 			gitCmd(t, dir, "remote", "set-url", "origin", "https://github.com/test/repo")
+			gitCmd(t, dir, "push", "origin", base+":refs/heads/main")
 			sctx.Repo.URLsVerified = true
 			if scenario == "already upstream" || scenario == "attempt already upstream" {
 				gitCmd(t, dir, "push", "origin", "HEAD:refs/heads/feature")

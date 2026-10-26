@@ -296,7 +296,7 @@ func TestPushStep_ChangedPRComparisonRefusesAttestationAndPush(t *testing.T) {
 				t.Fatalf("pushed before comparison refusal: %s", remote)
 			}
 			log, err := os.ReadFile(logFile)
-			if err != nil {
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
 				t.Fatal(err)
 			}
 			if strings.Contains(string(log), "pr edit") {
