@@ -181,14 +181,14 @@ func TestPRContextGuardExternalCIOwnerRejectsDifferentPRHead(t *testing.T) {
 	}
 }
 
-func TestPRContextGuardRequiresPublishedHeadBeforePRMutation(t *testing.T) {
+func TestPRContextGuardRequiresAccountedHeadForAttachedOpenPR(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		prHead   func(*testing.T, string, string, string) string
 		wantFail bool
 	}{
 		{name: "exact head", prHead: func(_ *testing.T, _ string, _ string, head string) string { return head }},
-		{name: "older ancestor", prHead: func(_ *testing.T, _ string, base string, _ string) string { return base }, wantFail: true},
+		{name: "older ancestor", prHead: func(_ *testing.T, _ string, base string, _ string) string { return base }},
 		{name: "rebased sibling", prHead: func(t *testing.T, dir, base, _ string) string {
 			gitCmd(t, dir, "checkout", "-b", "older-pr-head", base)
 			gitCmd(t, dir, "commit", "--allow-empty", "-m", "older PR head")
@@ -200,17 +200,13 @@ func TestPRContextGuardRequiresPublishedHeadBeforePRMutation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dir, base, head := setupGitRepo(t)
 			sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
-			baseline := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
 			valid := pipeline.PRTargetSelection{PRURL: "https://github.com/test/repo/pull/42", SourceRepo: "test/repo", SourceBranch: "feature", ForgeHeadSHA: head, TargetBranch: "main"}
-			if _, err := guardPRContextWithSelection(baseline, types.StepPR, valid, false); err != nil {
+			if _, err := guardPRContextWithSelection(sctx, types.StepPR, valid, false); err != nil {
 				t.Fatalf("valid published head: %v", err)
 			}
 			selection := pipeline.PRTargetSelection{
 				PRURL: "https://github.com/test/repo/pull/42", SourceRepo: "test/repo", SourceBranch: "feature",
 				ForgeHeadSHA: tc.prHead(t, dir, base, head), TargetBranch: "main",
-			}
-			if _, err := guardPRContextWithSelection(sctx, types.StepRebase, selection, false); err != nil {
-				t.Fatal(err)
 			}
 			before, err := sctx.DB.GetRunPRContext(sctx.Run.ID)
 			if err != nil {
@@ -218,8 +214,8 @@ func TestPRContextGuardRequiresPublishedHeadBeforePRMutation(t *testing.T) {
 			}
 			_, err = guardPRContextWithSelection(sctx, types.StepPR, selection, false)
 			if tc.wantFail {
-				if err == nil || !strings.Contains(err.Error(), "differs from local head") {
-					t.Fatalf("PR mutation guard error = %v, want exact-head refusal", err)
+				if err == nil || !strings.Contains(err.Error(), "unaccounted pull request head") {
+					t.Fatalf("PR mutation guard error = %v, want unaccounted-head refusal", err)
 				}
 				after, readErr := sctx.DB.GetRunPRContext(sctx.Run.ID)
 				if readErr != nil || *after != *before {
@@ -228,7 +224,7 @@ func TestPRContextGuardRequiresPublishedHeadBeforePRMutation(t *testing.T) {
 				return
 			}
 			if err != nil {
-				t.Fatalf("exact published head refused: %v", err)
+				t.Fatalf("accounted attached head refused: %v", err)
 			}
 		})
 	}

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -117,5 +118,145 @@ func TestAccountedForgeHeadPRAndCIGuards(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestAccountedForgeHeadPRGuardCatchesUpToPublishedAncestor(t *testing.T) {
+	for _, afterStep := range []bool{false, true} {
+		for _, kind := range []string{"catch-up", "unchanged ancestor", "exact", "foreign", "source", "base", "local", "merged", "closed"} {
+			t.Run(fmt.Sprintf("after=%t/%s", afterStep, kind), func(t *testing.T) {
+				c, selected := accountedRewindFixture(t)
+				ancestor := c.Run.HeadSHA
+				gitCmd(t, c.WorkDir, "commit", "--allow-empty", "-m", "published descendant")
+				published := gitCmd(t, c.WorkDir, "rev-parse", "HEAD")
+				c.Run.HeadSHA = published
+				if err := c.DB.UpdateRunHeadSHA(c.Run.ID, published); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := guardPRContextWithSelection(c, types.StepRebase, selected, false); err != nil {
+					t.Fatal(err)
+				}
+				gitCmd(t, c.WorkDir, "push", "origin", "feature")
+				if err := c.DB.UpdateRunPushBinding(c.Run.ID, db.PushBinding{HeadSHA: published}); err != nil {
+					t.Fatal(err)
+				}
+				recordReviewApproval(t, c, published)
+				before, err := c.DB.GetRunPRContext(c.Run.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				c.PRContext = before
+				selected.ForgeHeadSHA = ancestor
+				state := "open"
+				cause := ""
+				switch kind {
+				case "unchanged ancestor":
+					selected.ForgeHeadSHA = before.ForgeHeadSHA
+				case "exact":
+					selected.ForgeHeadSHA = published
+				case "foreign":
+					selected.ForgeHeadSHA = foreignForgeHead(t, c)
+					cause = "unaccounted pull request head"
+				case "source":
+					selected.SourceBranch = "other"
+					cause = "on other differs"
+				case "base":
+					selected.TargetBranch = "other"
+					gitCmd(t, c.WorkDir, "push", "origin", "main:other")
+					cause = "differs from local head"
+				case "local":
+					gitCmd(t, c.WorkDir, "commit", "--allow-empty", "-m", "unattributed local edit")
+					cause = "PR comparison changed after"
+				case "merged", "closed":
+					state = kind
+					cause = "is " + state
+				}
+				setAccountedForgeFacts(t, c, selected)
+				wireState := state
+				if state == "merged" {
+					wireState = "closed"
+				}
+				facts := fmt.Sprintf(`{"number":42,"html_url":%q,"state":%q,"merged":%t,"merge_commit_sha":%q,"head":{"ref":%q,"sha":%q,"repo":{"full_name":%q}},"base":{"ref":%q}}`, selected.PRURL, wireState, state == "merged", published, selected.SourceBranch, selected.ForgeHeadSHA, selected.SourceRepo, selected.TargetBranch)
+				c.Env = append(c.Env, "FAKE_CLI_PR_FACTS_JSON="+facts)
+				c.PRContextAfterStep = afterStep
+				decision, err := GuardPRContext(c, types.StepPR)
+				after, readErr := c.DB.GetRunPRContext(c.Run.ID)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				t.Logf("PR guard after=%t pinned=%s observed=%s local=%s published=%s target=%s generation=%d->%d decision=%+v err=%v", afterStep, before.ForgeHeadSHA, selected.ForgeHeadSHA, gitCmd(t, c.WorkDir, "rev-parse", "HEAD"), published, before.TargetSHA, before.Generation, after.Generation, decision, err)
+				if after.Generation != before.Generation || after.LocalHeadSHA != published || after.TargetSHA != before.TargetSHA {
+					t.Fatalf("forge observation changed comparison: %+v", after)
+				}
+				if cause != "" {
+					if err == nil || !strings.Contains(err.Error(), cause) {
+						t.Fatalf("expected %q refusal, got %+v %v", cause, decision, err)
+					}
+					if kind != "local" && after.PRContextCandidate != before.PRContextCandidate {
+						t.Fatalf("refused observation changed receipt: %+v", after)
+					}
+					return
+				}
+				if err != nil || decision.RestartFrom != "" || after.ForgeHeadSHA != selected.ForgeHeadSHA || c.PRContext.ForgeHeadSHA != selected.ForgeHeadSHA {
+					t.Fatalf("accounted ancestor rejected: %+v %+v %v", decision, after, err)
+				}
+				if !isAncestor(c.Ctx, c.WorkDir, selected.ForgeHeadSHA, published) {
+					t.Fatal("accepted observation is not a published ancestor")
+				}
+				if !afterStep {
+					c.PRContextAfterStep = true
+					decision, err = GuardPRContext(c, types.StepPR)
+					if err != nil || decision.RestartFrom != "" {
+						t.Fatalf("post-step guard refused the refreshed observation: %+v %v", decision, err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestAccountedForgeHeadPRGuardKeepsTheAcceptedPreRebaseObservation(t *testing.T) {
+	for _, afterStep := range []bool{false, true} {
+		t.Run(fmt.Sprintf("after=%t", afterStep), func(t *testing.T) {
+			c, selected := accountedRewindFixture(t)
+			selected.ForgeHeadSHA = c.Run.HeadSHA
+			setAccountedForgeFacts(t, c, selected)
+			if _, err := GuardPRContext(c, types.StepTest); err != nil {
+				t.Fatal(err)
+			}
+			advanceRewindTarget(t, c)
+			if decision, err := GuardPRContext(c, types.StepTest); err != nil || decision.RestartFrom != types.StepRebase {
+				t.Fatalf("classify rewind: %+v %v", decision, err)
+			}
+			if out, err := (&RebaseStep{}).Execute(c); err != nil || out == nil || out.NeedsApproval {
+				t.Fatalf("integrate rewind: %+v %v", out, err)
+			}
+			c.PRContextAfterStep, c.PRContextRebaseCompleted = true, true
+			if decision, err := GuardPRContext(c, types.StepRebase); err != nil || decision.RestartFrom != "" {
+				t.Fatalf("complete rewind: %+v %v", decision, err)
+			}
+			if isAncestor(c.Ctx, c.WorkDir, selected.ForgeHeadSHA, c.Run.HeadSHA) {
+				t.Fatal("fixture must rewrite the already accounted head")
+			}
+			gitCmd(t, c.WorkDir, "push", "--force", "origin", "feature")
+			if err := c.DB.UpdateRunPushBinding(c.Run.ID, db.PushBinding{HeadSHA: c.Run.HeadSHA}); err != nil {
+				t.Fatal(err)
+			}
+			recordReviewApproval(t, c, c.Run.HeadSHA)
+			before, err := c.DB.GetRunPRContext(c.Run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.PRContextAfterStep, c.PRContextRebaseCompleted = afterStep, false
+			decision, err := GuardPRContext(c, types.StepPR)
+			after, readErr := c.DB.GetRunPRContext(c.Run.ID)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			t.Logf("PR after rebase pinned=%s observed=%s local=%s generation=%d->%d decision=%+v err=%v", before.ForgeHeadSHA, selected.ForgeHeadSHA, c.Run.HeadSHA, before.Generation, after.Generation, decision, err)
+			if err != nil || decision.RestartFrom != "" || after.PRContextCandidate != before.PRContextCandidate || after.Generation != before.Generation {
+				t.Fatalf("accepted observation lost after rebase: %+v %+v %v", decision, after, err)
+			}
+		})
 	}
 }

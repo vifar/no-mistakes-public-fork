@@ -403,9 +403,6 @@ func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName
 	}
 	selection.TargetBranch = candidate.TargetBranch
 	localHead := candidate.LocalHeadSHA
-	if step == types.StepPR && selection.ForgeHeadSHA != "" && selection.ForgeHeadSHA != localHead {
-		return pipeline.PRContextDecision{}, fmt.Errorf("pull request head %s differs from local head %s before PR publication", selection.ForgeHeadSHA, localHead)
-	}
 	if sctx.Run.ExternalCIOwner == types.ExternalCIOwnerControllerShipPR &&
 		step.Order() >= types.StepCI.Order() && selection.PRURL != "" && selection.ForgeHeadSHA != localHead {
 		return pipeline.PRContextDecision{}, fmt.Errorf("pull request head %s differs from local head %s for external CI handoff", selection.ForgeHeadSHA, localHead)
@@ -423,7 +420,8 @@ func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName
 		candidate.SourceRepo = previous.SourceRepo
 	}
 
-	if !freshRetarget && (selection.State == "" || selection.State == scm.PRStateOpen) && samePRContextIdentity(previous, candidate) {
+	if !freshRetarget && candidate.PRURL != "" &&
+		(selection.State == "" || selection.State == scm.PRStateOpen) && samePRContextIdentity(previous, candidate) {
 		previous, err = reconcileAccountedForgeHead(sctx, previous, candidate, accountedForgeLocalHead(sctx, step, previous, candidate))
 		if err != nil {
 			return pipeline.PRContextDecision{}, err
@@ -433,6 +431,8 @@ func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName
 		if err != nil {
 			return pipeline.PRContextDecision{}, err
 		}
+	} else if step == types.StepPR && selection.ForgeHeadSHA != "" && selection.ForgeHeadSHA != localHead {
+		return pipeline.PRContextDecision{}, fmt.Errorf("pull request head %s differs from local head %s before PR publication", selection.ForgeHeadSHA, localHead)
 	}
 	if pending != nil && !samePendingRewindIdentity(sctx, pending, previous, candidate, selection) {
 		return pipeline.PRContextDecision{}, fmt.Errorf("PR comparison changed during pending rewind; start a new run")
