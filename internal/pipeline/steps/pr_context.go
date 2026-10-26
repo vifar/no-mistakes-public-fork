@@ -176,10 +176,9 @@ func pipelineOwnedHeadComparison(sctx *pipeline.StepContext, receipt *db.PRConte
 	if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "merge-base", "--is-ancestor", receipt.LocalHeadSHA, publishedHead); err != nil {
 		return nil, nil
 	}
-	// The receipt must name the LIVE forge head, or the terminal comparison
-	// would reject the very advance this accepted. The forge head is the
-	// one the live PR reports, and the publication record above already
-	// proved this run published exactly that head.
+	// Bind the candidate to the live forge head. The caller decides whether
+	// to persist it for terminal comparison or use it only for readiness;
+	// neither path may accept a head another publisher moved.
 	if selection.ForgeHeadSHA == "" || selection.ForgeHeadSHA != publishedHead ||
 		selection.PRURL != receipt.PRURL || selection.TargetBranch != receipt.TargetBranch ||
 		selection.SourceBranch != receipt.SourceBranch ||
@@ -187,9 +186,8 @@ func pipelineOwnedHeadComparison(sctx *pipeline.StepContext, receipt *db.PRConte
 		sctx.Run.HeadSHA != publishedHead {
 		return nil, nil
 	}
-	// The comparison itself is RECOMPUTED against the published head, so the
-	// receipt's merge base and diff digest describe the head the PR actually
-	// carries - never the stale pre-repair comparison.
+	// Recompute the candidate against the published head and original target;
+	// the pre-repair merge base and diff digest cannot certify repaired code.
 	localHead, err := git.HeadSHA(sctx.Ctx, sctx.WorkDir)
 	if err != nil {
 		return nil, fmt.Errorf("read advanced PR head: %w", err)

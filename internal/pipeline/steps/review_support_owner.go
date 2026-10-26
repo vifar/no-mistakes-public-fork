@@ -70,9 +70,9 @@ func currentReviewSupportClaims(sctx *pipeline.StepContext, claimType types.Find
 	}
 	// A repair this run committed moved the head past what Review approved,
 	// so the repaired code must be reviewed again before any claim is judged.
-	// The reviewed head is the authority, not receipt lag: the CI monitor
-	// re-pins the receipt to its own published repair (issue #87), and that
-	// must never let a repair resolve the claims of the code it replaced.
+	// Receipt lag and the durable Review-approved head independently expose
+	// the advance. CI readiness's ephemeral publication proof must never let
+	// a repair resolve the claims of the code it replaced.
 	reviewedHeadMoved := run != nil && run.ReviewApprovedHeadSHA != nil &&
 		strings.TrimSpace(*run.ReviewApprovedHeadSHA) != "" && *run.ReviewApprovedHeadSHA != sctx.Run.HeadSHA
 	if receipt != nil && run != nil && sctx.PRContext != nil && sctx.Fixing && run.HeadSHA == sctx.Run.HeadSHA &&
