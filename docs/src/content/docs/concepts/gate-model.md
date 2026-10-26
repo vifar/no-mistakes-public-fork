@@ -44,7 +44,6 @@ When you run `no-mistakes init` in a repo:
 If the repo is already initialized, it refreshes the existing gate instead of failing: managed hook installation, push-option support, hook-path isolation, gate and working remotes, and origin/default-branch metadata are repaired or updated where needed.
 If the working repo was renamed or moved and the old path no longer exists, `init` reattaches the existing gate from the leftover `no-mistakes` remote, updates the stored working path, and preserves the repo ID plus run history.
 If the working repo was copied and the original path still exists, `init` treats the copy as a new repo and repoints the copied `no-mistakes` remote to a fresh gate, provided the copy's derived repo ID is not already registered.
-If daemon startup fails during a refresh, `init` reports the error but does not eject the pre-existing gate.
 
 Before provisioning a fresh gate, `init` checks whether another checkout owns
 the derived repo ID. A conflict is refused without changing that checkout's
@@ -62,6 +61,10 @@ failure removes only a gate directory created by that attempt and still
 unowned in the registry; a pre-existing directory is retained. Rollback restores
 the caller's gate remote only if it changed, preserving literal URL values,
 including aliases.
+
+If daemon startup fails after gate setup, `init` reports the error and ejects
+the gate only if this invocation created its directory. A refreshed or adopted
+pre-existing gate stays registered and is not ejected.
 
 `init` and `eject` serialize ownership changes with an OS file lock at
 `<NM_HOME>/init.lock`, held from the first registration lookup through completion
