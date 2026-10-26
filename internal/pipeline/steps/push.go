@@ -134,16 +134,9 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 				return nil, err
 			}
 			if receipt != nil {
-				selection := pipeline.PRTargetSelection{
-					PRURL: receipt.PRURL, SourceRepo: receipt.SourceRepo, SourceBranch: receipt.SourceBranch,
-					TargetBranch: receipt.TargetBranch, ForgeHeadSHA: receipt.ForgeHeadSHA,
-				}
-				if sctx.PRTarget != nil {
-					selection = *sctx.PRTarget
-				}
 				comparison := *sctx
 				comparison.PRContextAfterStep = true
-				decision, err := guardPRContextWithSelection(&comparison, s.Name(), selection, false)
+				decision, err := GuardPRContext(&comparison, s.Name())
 				if err != nil {
 					return nil, err
 				}

@@ -67,9 +67,9 @@ func TestPushStep_CorrectionReceiptWaitsForTargetValidation(t *testing.T) {
 					// Cancel during the real target fetch, after Push committed
 					// its correction. The upload-pack child blocks until Git's
 					// context cancellation stops its process group.
-					// Match origin's resolved local URL so the fetch uses that
-					// named remote and its configured upload-pack command.
-					c.Repo.UpstreamURL = upstream
+					// Use origin's resolved local URL for Git while retaining
+					// the registered GitHub identity for the live forge read.
+					c.Repo.URLsVerified = false
 					marker := filepath.Join(t.TempDir(), "fetch-started")
 					uploadPack := filepath.Join(t.TempDir(), "upload-pack")
 					if err := os.WriteFile(uploadPack, []byte("#!/bin/sh\n: > "+shellQuotePreparation(marker)+"\nexec sleep 30\n"), 0700); err != nil {

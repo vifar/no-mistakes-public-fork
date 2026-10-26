@@ -783,7 +783,11 @@ func TestAccountedForgeHeadCorrectionWithRefusedTargetLeavesDurableStateUnchange
 func TestAccountedForgeHeadCorrectionWithTargetAdvanceIsOneAcceptedTransition(t *testing.T) {
 	c, selected := accountedRewindFixture(t)
 	original := c.Run.HeadSHA
-	gitCmd(t, c.WorkDir, "commit", "--allow-empty", "-m", "Review correction")
+	if err := os.WriteFile(filepath.Join(c.WorkDir, "review-fix.txt"), []byte("review correction\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, c.WorkDir, "add", "review-fix.txt")
+	gitCmd(t, c.WorkDir, "commit", "-m", "Review correction")
 	correction := gitCmd(t, c.WorkDir, "rev-parse", "HEAD")
 	if err := recordPipelineHeadRange(c, original, correction); err != nil {
 		t.Fatal(err)
@@ -804,5 +808,16 @@ func TestAccountedForgeHeadCorrectionWithTargetAdvanceIsOneAcceptedTransition(t 
 	if err != nil || decision.RestartFrom != types.StepRebase || after.LocalHeadSHA != correction || after.ForgeHeadSHA != correction ||
 		pending == nil || pending.ForgeHeadSHA == nil || *pending.ForgeHeadSHA != correction || pending.LocalHeadSHA != correction {
 		t.Fatalf("receipt and pending did not move together: %+v %+v %v", after, pending, err)
+	}
+	// Rewind review carry compares this archived patch with the integrated
+	// patch. It must describe the actual correction, not the pre-fix head.
+	history, err := c.DB.GetTargetRewindHistory(c.Run.ID)
+	if err != nil || len(history) != 1 {
+		t.Fatalf("missing accepted rewind history: %+v %v", history, err)
+	}
+	archived := history[0].Comparison
+	if archived.LocalHeadSHA != correction || archived.TargetSHA != before.TargetSHA ||
+		archived.MergeBaseSHA != before.MergeBaseSHA || archived.DiffDigest == before.DiffDigest || after.Generation != before.Generation+1 {
+		t.Fatalf("rewind lost the reviewed correction or spent an extra generation: archived=%+v before=%+v after=%+v", archived, before, after)
 	}
 }

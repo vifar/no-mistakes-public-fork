@@ -39,7 +39,7 @@ type TargetAdvanceRewindRequest struct {
 	SourceSHA            *string
 	HasPR                bool
 	ForgeRefresh         *ForgeRefresh
-	AcceptLocalAdvance   bool
+	LocalAdvance         *PRContextCandidate // proven local correction compared against the old target
 }
 
 // ForgeRefresh is an accounted forge observation applied inside the binding
@@ -185,7 +185,7 @@ func checkTargetRewindEligibility(tx *sql.Tx, runID string, previous *PRContext,
 	if !pinnedPR {
 		return refuse("PR discovery was not pinned at the first comparison, or its remote source changed")
 	}
-	if previous.LocalHeadSHA != candidate.LocalHeadSHA && !req.AcceptLocalAdvance || r.HeadSHA != candidate.LocalHeadSHA {
+	if previous.LocalHeadSHA != candidate.LocalHeadSHA && req.LocalAdvance == nil || r.HeadSHA != candidate.LocalHeadSHA {
 		return refuse("local head differs from the run comparison")
 	}
 	if previous.TargetSHA == candidate.TargetSHA {

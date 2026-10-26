@@ -251,7 +251,13 @@ func (d *DB) bindRunPRContextOnce(writeCtx context.Context, runID string, candid
             VALUES (?,?,?,?,?,?,?,?,?,?)`, id, runID, previous.TargetSHA, candidate.TargetSHA, candidate.LocalHeadSHA, source, forgeHead, req.Step, generation, now()); err != nil {
 			return PRContextBindResult{}, err
 		}
-		if err = archiveTargetRewind(tx, id, runID, previous, rewindRun.ReviewApprovedHeadSHA); err != nil {
+		archived := *previous
+		if req.LocalAdvance != nil {
+			// Review carry needs the corrected patch at the old target.
+			// Keep this attribution inside the accepted rewind transaction.
+			archived.PRContextCandidate = *req.LocalAdvance
+		}
+		if err = archiveTargetRewind(tx, id, runID, &archived, rewindRun.ReviewApprovedHeadSHA); err != nil {
 			return PRContextBindResult{}, err
 		}
 		if _, err = tx.ExecContext(writeCtx, `UPDATE runs SET target_advance_rewinds=target_advance_rewinds+1,pending_target_rewind_id=? WHERE id=?`, id, runID); err != nil {

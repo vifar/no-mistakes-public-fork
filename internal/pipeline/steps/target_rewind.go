@@ -154,13 +154,22 @@ func classifyTargetAdvance(c *pipeline.StepContext, step types.StepName, selecti
 	if _, err := git.Run(c.Ctx, c.WorkDir, "merge-base", "--is-ancestor", previous.TargetSHA, candidate.TargetSHA); err != nil {
 		return refusal(fmt.Errorf("target is not a strict fast-forward: %w", err))
 	}
+	var localAdvance *db.PRContextCandidate
+	if acceptLocal {
+		own, err := prComparisonAtTarget(c, previous.TargetBranch, previous.TargetSHA, candidate.LocalHeadSHA)
+		if err != nil {
+			return db.PRContextBindResult{}, err
+		}
+		own.PRURL, own.SourceRepo, own.SourceBranch, own.ForgeHeadSHA = previous.PRURL, previous.SourceRepo, previous.SourceBranch, previous.ForgeHeadSHA
+		localAdvance = &own
+	}
 	maxRewinds := config.DefaultMaxTargetAdvanceRewinds
 	if c.Config != nil {
 		maxRewinds = c.Config.Rebase.MaxTargetAdvanceRewinds
 	}
 	result, err := c.DB.RewindRunPRContext(c.Run.ID, candidate, db.TargetAdvanceRewindRequest{
 		ExpectedGeneration: previous.Generation, Step: step, MaxRewinds: maxRewinds, SourceSHA: source, HasPR: selection.ForgeHeadSHA != "", ObservedPRURL: selection.ObservedPRURL, ObservedForgeHeadSHA: selection.ForgeHeadSHA,
-		ForgeRefresh: firstForgeRefresh(forge), AcceptLocalAdvance: acceptLocal,
+		ForgeRefresh: firstForgeRefresh(forge), LocalAdvance: localAdvance,
 	})
 	if err != nil {
 		return refusal(err)

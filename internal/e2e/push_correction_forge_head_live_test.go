@@ -47,7 +47,7 @@ func TestPushCorrectionIndependentForgeHeadLiveJourney(t *testing.T) {
 			h.Checkout(branch)
 			h.PushToGate(branch)
 			run := h.WaitForRun(branch, 90*time.Second)
-			if run.Status != types.RunFailed || run.Error == nil || !strings.Contains(*run.Error, "PR comparison changed") {
+			if run.Status != types.RunFailed || run.Error == nil || !strings.Contains(*run.Error, "unaccounted pull request head") {
 				t.Fatalf("independent forge head was not refused: %s %s", run.Status, deref(run.Error))
 			}
 			database, err := db.OpenReadOnly(filepath.Join(h.NMHome, "state.sqlite"))
@@ -60,7 +60,9 @@ func TestPushCorrectionIndependentForgeHeadLiveJourney(t *testing.T) {
 			if runErr != nil || receiptErr != nil || closeErr != nil {
 				t.Fatalf("read durable refusal: %v %v %v", runErr, receiptErr, closeErr)
 			}
-			if stored == nil || stored.LastPushedSHA != nil || stored.TargetAdvanceRewinds != 0 || receipt == nil || receipt.ForgeHeadSHA != source {
+			if stored == nil || stored.LastPushedSHA != nil || stored.TargetAdvanceRewinds != 0 || stored.PendingTargetRewindID != nil ||
+				receipt == nil || receipt.ForgeHeadSHA != source || receipt.LocalHeadSHA != source || receipt.TargetSHA != base ||
+				receipt.Generation != 1 || receipt.PinnedLocalHeadSHA != "" {
 				t.Fatalf("local correction authorized external movement: run=%+v receipt=%+v", stored, receipt)
 			}
 			if got := h.UpstreamBranchSHA(branch); got != target {
