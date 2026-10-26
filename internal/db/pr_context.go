@@ -77,14 +77,14 @@ func (d *DB) GetRunPRContext(runID string) (*PRContext, error) {
 // an identical prospective comparison preserves completed steps. Rebase is the
 // boundary when the target moved; Review is the boundary after Rebase itself
 // changed local HEAD.
-func (d *DB) BindRunPRContext(runID string, candidate PRContextCandidate, resetFrom types.StepName) (PRContextBindResult, error) {
-	return d.bindRunPRContext(runID, candidate, resetFrom, false, nil)
+func (d *DB) BindRunPRContext(runID string, candidate PRContextCandidate, resetFrom types.StepName, refresh ...ForgeRefresh) (PRContextBindResult, error) {
+	return d.bindRunPRContext(runID, candidate, resetFrom, false, refreshOptions(refresh))
 }
 
 // AdvanceRunPRContext records a commit made by the current forward pipeline
 // step. Earlier completed steps keep their own evidence and review anchor.
-func (d *DB) AdvanceRunPRContext(runID string, candidate PRContextCandidate) (PRContextBindResult, error) {
-	return d.bindRunPRContext(runID, candidate, types.StepReview, true, nil)
+func (d *DB) AdvanceRunPRContext(runID string, candidate PRContextCandidate, refresh ...ForgeRefresh) (PRContextBindResult, error) {
+	return d.bindRunPRContext(runID, candidate, types.StepReview, true, refreshOptions(refresh))
 }
 
 func (d *DB) bindRunPRContext(runID string, candidate PRContextCandidate, resetFrom types.StepName, forward bool, options *prContextBindOptions) (PRContextBindResult, error) {
@@ -136,6 +136,36 @@ func (d *DB) bindRunPRContextOnce(writeCtx context.Context, runID string, candid
 		if previous.PRURL != "" && candidate.PRURL != previous.PRURL {
 			return PRContextBindResult{}, fmt.Errorf("bind run PR context: PR identity conflict")
 		}
+		refreshed := false
+		if options != nil && options.refresh != nil {
+			r := options.refresh
+			if previous.PRURL == "" || previous.ForgeHeadSHA != r.From || candidate.ForgeHeadSHA != r.To || !validGitSHA(r.To) ||
+				r.AcceptedLocal != "" && !validGitSHA(r.AcceptedLocal) {
+				return PRContextBindResult{}, fmt.Errorf("bind run PR context: accounted forge observation no longer matches the receipt")
+			}
+			if _, err = tx.ExecContext(writeCtx, `UPDATE run_pr_contexts SET forge_head_sha=?, observed_at=?,
+				pinned_local_head_sha=CASE WHEN ?='' THEN pinned_local_head_sha ELSE ? END WHERE run_id=?`,
+				r.To, now(), r.AcceptedLocal, r.AcceptedLocal, runID); err != nil {
+				return PRContextBindResult{}, err
+			}
+			livePending, err := pendingTargetRewind(tx, runID)
+			if err != nil {
+				return PRContextBindResult{}, err
+			}
+			if livePending != nil {
+				if livePending.ForgeHeadSHA == nil || *livePending.ForgeHeadSHA != r.From {
+					return PRContextBindResult{}, fmt.Errorf("bind run PR context: pending rewind observation differs from the receipt")
+				}
+				if _, err = tx.ExecContext(writeCtx, `UPDATE run_target_rewinds SET forge_head_sha=? WHERE id=?`, r.To, livePending.ID); err != nil {
+					return PRContextBindResult{}, err
+				}
+			}
+			previous.ForgeHeadSHA = r.To
+			if r.AcceptedLocal != "" {
+				previous.PinnedLocalHeadSHA = r.AcceptedLocal
+			}
+			refreshed = true
+		}
 		if previous.PRContextCandidate == candidate && (options == nil || options.completeGeneration == nil) {
 
 			if options != nil && options.rewind != nil {
@@ -146,6 +176,11 @@ func (d *DB) bindRunPRContextOnce(writeCtx context.Context, runID string, candid
 				if pending != nil && (!sameOptionalSHA(pending.SourceSHA, options.rewind.SourceSHA) ||
 					!sameOptionalSHA(pending.ForgeHeadSHA, prHeadObservation(candidate)) || options.rewind.HasPR != (candidate.PRURL != "")) {
 					return PRContextBindResult{}, fmt.Errorf("remote source or PR observation changed during pending rewind")
+				}
+			}
+			if refreshed {
+				if err = tx.Commit(); err != nil {
+					return PRContextBindResult{}, err
 				}
 			}
 			return PRContextBindResult{Generation: previous.Generation}, nil

@@ -38,22 +38,38 @@ type TargetAdvanceRewindRequest struct {
 	MaxRewinds           int
 	SourceSHA            *string
 	HasPR                bool
+	ForgeRefresh         *ForgeRefresh
+}
+
+// ForgeRefresh is an accounted forge observation applied inside the binding
+// transaction that accepts the rest of the transition, so the receipt and its
+// matching pending rewind observation move together or not at all.
+type ForgeRefresh struct {
+	From, To, AcceptedLocal string
 }
 
 type prContextBindOptions struct {
 	rewind             *TargetAdvanceRewindRequest
 	completeGeneration *int64
+	refresh            *ForgeRefresh
+}
+
+func refreshOptions(refresh []ForgeRefresh) *prContextBindOptions {
+	if len(refresh) == 0 {
+		return nil
+	}
+	return &prContextBindOptions{refresh: &refresh[0]}
 }
 
 func (d *DB) RewindRunPRContext(runID string, candidate PRContextCandidate, request TargetAdvanceRewindRequest) (PRContextBindResult, error) {
-	return d.bindRunPRContext(runID, candidate, types.StepRebase, false, &prContextBindOptions{rewind: &request})
+	return d.bindRunPRContext(runID, candidate, types.StepRebase, false, &prContextBindOptions{rewind: &request, refresh: request.ForgeRefresh})
 }
 
 // CompleteRebasePRContext consumes pending integration in the receipt bind,
 // including an identical receipt. Only the executor's successful Rebase path
 // may call this; parking and recovery are not successful integration.
-func (d *DB) CompleteRebasePRContext(runID string, candidate PRContextCandidate, expectedGeneration int64) (PRContextBindResult, error) {
-	return d.bindRunPRContext(runID, candidate, types.StepReview, false, &prContextBindOptions{completeGeneration: &expectedGeneration})
+func (d *DB) CompleteRebasePRContext(runID string, candidate PRContextCandidate, expectedGeneration int64, refresh ...ForgeRefresh) (PRContextBindResult, error) {
+	return d.bindRunPRContext(runID, candidate, types.StepReview, false, &prContextBindOptions{completeGeneration: &expectedGeneration, refresh: firstRefresh(refresh)})
 }
 
 type rewindQuery interface{ QueryRow(string, ...any) *sql.Row }
@@ -290,4 +306,11 @@ func (d *DB) AdvancePendingTargetRewindHead(runID, expectedHead, newHead string,
 		return struct{}{}, nil
 	})
 	return err
+}
+
+func firstRefresh(refresh []ForgeRefresh) *ForgeRefresh {
+	if len(refresh) == 0 {
+		return nil
+	}
+	return &refresh[0]
 }

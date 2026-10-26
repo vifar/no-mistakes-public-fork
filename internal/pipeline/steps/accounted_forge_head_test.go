@@ -655,7 +655,7 @@ func TestAccountedForgeHeadRefusedTransitionDoesNotPersistForgeObservation(t *te
 	})
 }
 
-func TestAccountedForgeHeadAccountingWritesNothingUntilCommit(t *testing.T) {
+func TestAccountedForgeHeadAccountingWritesNothingUntilAccepted(t *testing.T) {
 	c, selected := accountedRewindFixture(t)
 	before, err := c.DB.GetRunPRContext(c.Run.ID)
 	if err != nil {
@@ -663,19 +663,78 @@ func TestAccountedForgeHeadAccountingWritesNothingUntilCommit(t *testing.T) {
 	}
 	observed := before.PRContextCandidate
 	observed.ForgeHeadSHA = c.Run.HeadSHA
-	refreshed, commit, err := reconcileAccountedForgeHead(c, before, observed, before.LocalHeadSHA)
-	if err != nil || refreshed.ForgeHeadSHA != c.Run.HeadSHA {
+	refreshed, forge, err := reconcileAccountedForgeHead(c, before, observed, before.LocalHeadSHA)
+	if err != nil || forge == nil || refreshed.ForgeHeadSHA != c.Run.HeadSHA {
 		t.Fatalf("provisional accounting: %+v %v", refreshed, err)
 	}
 	durable, _ := c.DB.GetRunPRContext(c.Run.ID)
 	if durable.ForgeHeadSHA != selected.ForgeHeadSHA || durable.Generation != before.Generation {
-		t.Fatalf("accounting persisted before commit: %+v", durable)
+		t.Fatalf("accounting persisted before acceptance: %+v", durable)
 	}
-	if err := commit(); err != nil {
-		t.Fatal(err)
+	bound, err := c.DB.BindRunPRContext(c.Run.ID, refreshed.PRContextCandidate, types.StepReview, forge.options()...)
+	if err != nil || bound.Changed || bound.Generation != before.Generation {
+		t.Fatalf("accepting bind: %+v %v", bound, err)
 	}
 	durable, _ = c.DB.GetRunPRContext(c.Run.ID)
 	if durable.ForgeHeadSHA != c.Run.HeadSHA || durable.Generation != before.Generation {
-		t.Fatalf("commit lost the observation or advanced the generation: %+v", durable)
+		t.Fatalf("acceptance lost the observation or advanced the generation: %+v", durable)
+	}
+}
+
+func TestAccountedForgeHeadRefusedTargetTransitionLeavesReceiptAndPendingUnchanged(t *testing.T) {
+	for _, kind := range []string{"rewritten target", "exhausted budget"} {
+		t.Run(kind, func(t *testing.T) {
+			c, selected := accountedRewindFixture(t)
+			original := c.Run.HeadSHA
+			if kind == "exhausted budget" {
+				c.Config.Rebase.MaxTargetAdvanceRewinds = 0
+				advanceRewindTarget(t, c)
+			} else {
+				gitCmd(t, c.WorkDir, "checkout", "main")
+				gitCmd(t, c.WorkDir, "commit", "--amend", "--allow-empty", "-m", "rewritten target")
+				gitCmd(t, c.WorkDir, "push", "--force", "origin", "main")
+				gitCmd(t, c.WorkDir, "checkout", "feature")
+			}
+			before, _ := c.DB.GetRunPRContext(c.Run.ID)
+			pendingBefore, _ := c.DB.GetPendingTargetRewind(c.Run.ID)
+			selected.ForgeHeadSHA = original
+			setAccountedForgeFacts(t, c, selected)
+			for i := 0; i < 2; i++ {
+				_, err := GuardPRContext(c, types.StepTest)
+				after, _ := c.DB.GetRunPRContext(c.Run.ID)
+				pendingAfter, _ := c.DB.GetPendingTargetRewind(c.Run.ID)
+				t.Logf("%s attempt %d pinned=%s observed=%s local=%s generation=%d->%d forge-now=%s pending=%v err=%v", kind, i, before.ForgeHeadSHA, original, original, before.Generation, after.Generation, after.ForgeHeadSHA, pendingAfter != nil, err)
+				if err == nil || after.ForgeHeadSHA != before.ForgeHeadSHA || after.Generation != before.Generation || (pendingBefore == nil) != (pendingAfter == nil) {
+					t.Fatalf("refused transition changed durable state: %+v %v", after, err)
+				}
+			}
+		})
+	}
+}
+
+func TestAccountedForgeHeadCatchUpAfterRebaseAndSecondTargetAdvance(t *testing.T) {
+	c, selected := accountedRewindFixture(t)
+	original := c.Run.HeadSHA
+	advanceRewindTarget(t, c)
+	if decision, err := GuardPRContext(c, types.StepTest); err != nil || decision.RestartFrom != types.StepRebase {
+		t.Fatalf("classify rewind: %+v %v", decision, err)
+	}
+	if out, err := (&RebaseStep{}).Execute(c); err != nil || out == nil || out.NeedsApproval {
+		t.Fatalf("integrate rewind: %+v %v", out, err)
+	}
+	advanceRewindTarget(t, c)
+	selected.ForgeHeadSHA = original
+	setAccountedForgeFacts(t, c, selected)
+	before, _ := c.DB.GetRunPRContext(c.Run.ID)
+	c.PRContextAfterStep, c.PRContextRebaseCompleted = true, true
+	decision, err := GuardPRContext(c, types.StepRebase)
+	after, _ := c.DB.GetRunPRContext(c.Run.ID)
+	pending, _ := c.DB.GetPendingTargetRewind(c.Run.ID)
+	t.Logf("second advance pinned=%s observed=%s local=%s generation=%d->%d decision=%+v pending=%+v err=%v", before.ForgeHeadSHA, original, c.Run.HeadSHA, before.Generation, after.Generation, decision, pending, err)
+	if err != nil || after.ForgeHeadSHA != original {
+		t.Fatalf("catch-up across a second target advance rejected: %+v %v", after, err)
+	}
+	if pending != nil && (pending.ForgeHeadSHA == nil || *pending.ForgeHeadSHA != after.ForgeHeadSHA) {
+		t.Fatalf("pending observation stale after the receipt moved: %+v", pending)
 	}
 }

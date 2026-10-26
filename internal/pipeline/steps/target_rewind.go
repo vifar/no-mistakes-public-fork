@@ -181,7 +181,14 @@ func attributeRebasedHead(c *pipeline.StepContext, previous *db.PRContext, candi
 	return c.DB.GetRunPRContext(c.Run.ID)
 }
 
-func classifyTargetAdvance(c *pipeline.StepContext, step types.StepName, selection pipeline.PRTargetSelection, previous *db.PRContext, candidate db.PRContextCandidate, source *string) (db.PRContextBindResult, error) {
+func firstForgeRefresh(forge []*accountedForge) *db.ForgeRefresh {
+	if len(forge) == 0 || forge[0] == nil {
+		return nil
+	}
+	return &forge[0].options()[0]
+}
+
+func classifyTargetAdvance(c *pipeline.StepContext, step types.StepName, selection pipeline.PRTargetSelection, previous *db.PRContext, candidate db.PRContextCandidate, source *string, forge ...*accountedForge) (db.PRContextBindResult, error) {
 	refusal := func(cause error) (db.PRContextBindResult, error) {
 		return db.PRContextBindResult{}, fmt.Errorf("PR comparison changed after rebase; start a new run for the current target and head: %w", cause)
 	}
@@ -197,6 +204,7 @@ func classifyTargetAdvance(c *pipeline.StepContext, step types.StepName, selecti
 	}
 	result, err := c.DB.RewindRunPRContext(c.Run.ID, candidate, db.TargetAdvanceRewindRequest{
 		ExpectedGeneration: previous.Generation, Step: step, MaxRewinds: maxRewinds, SourceSHA: source, HasPR: selection.ForgeHeadSHA != "", ObservedPRURL: selection.ObservedPRURL, ObservedForgeHeadSHA: selection.ForgeHeadSHA,
+		ForgeRefresh: firstForgeRefresh(forge),
 	})
 	if err != nil {
 		return refusal(err)
@@ -359,10 +367,10 @@ func checkedRewindTargets(c *pipeline.StepContext, targets []string) (checked []
 	if previous.SourceBranch == candidate.SourceBranch && scm.SameSourceRepository(resolvedProvider(c), previous.SourceRepo, candidate.SourceRepo) {
 		candidate.SourceRepo = previous.SourceRepo
 	}
-	commitForge := func() error { return nil }
+	var forge *accountedForge
 	if (selected.State == "" || selected.State == scm.PRStateOpen) && samePRContextIdentity(previous, candidate) {
 		pinnedForge := previous.ForgeHeadSHA
-		previous, commitForge, err = reconcileAccountedForgeHead(c, previous, candidate, previous.LocalHeadSHA)
+		previous, forge, err = reconcileAccountedForgeHead(c, previous, candidate, previous.LocalHeadSHA)
 		if err != nil {
 			return nil, cleanup, err
 		}
@@ -374,11 +382,9 @@ func checkedRewindTargets(c *pipeline.StepContext, targets []string) (checked []
 	if !sameRewindSource(pending.SourceSHA, observed.source) {
 		return nil, cleanup, fmt.Errorf("remote source changed during pending rewind")
 	}
-	if err = commitForge(); err != nil {
-		return nil, cleanup, err
-	}
-	if candidate.TargetSHA != previous.TargetSHA {
-		if _, err = classifyTargetAdvance(c, types.StepRebase, selected, previous, candidate, observed.source); err != nil {
+	classified := candidate.TargetSHA != previous.TargetSHA
+	if classified {
+		if _, err = classifyTargetAdvance(c, types.StepRebase, selected, previous, candidate, observed.source, forge); err != nil {
 			return nil, cleanup, err
 		}
 		// The old conflict selection and fix budget belong to the discarded
@@ -412,6 +418,11 @@ func checkedRewindTargets(c *pipeline.StepContext, targets []string) (checked []
 		}
 	}
 	checked = append(checked, observed.target)
+	if !classified {
+		if err = forge.commit(c); err != nil {
+			return nil, cleanup, err
+		}
+	}
 	return checked, cleanup, nil
 }
 

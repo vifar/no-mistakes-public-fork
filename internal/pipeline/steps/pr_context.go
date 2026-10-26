@@ -324,19 +324,87 @@ func samePRContextIdentity(previous *db.PRContext, candidate db.PRContextCandida
 		previous.TargetBranch == candidate.TargetBranch
 }
 
-// reconcileAccountedForgeHead does not bless a local or target transition.
+// accountedForge is a proven but not yet durable forge observation. It is
+// persisted only by the binding transaction that accepts the rest of the
+// caller's transition, or by commit once a caller with nothing else to write
+// has accepted it. A nil value means there is nothing to persist.
+type accountedForge struct {
+	from, to, accepted string
+}
+
+func (a *accountedForge) options() []db.ForgeRefresh {
+	if a == nil {
+		return nil
+	}
+	return []db.ForgeRefresh{{From: a.from, To: a.to, AcceptedLocal: a.accepted}}
+}
+
+func (a *accountedForge) withForge(receipt *db.PRContext, forge string) *db.PRContext {
+	if a == nil || receipt == nil {
+		return receipt
+	}
+	moved := *receipt
+	moved.ForgeHeadSHA = forge
+	return &moved
+}
+
+func (a *accountedForge) stored(receipt *db.PRContext) *db.PRContext {
+	if a == nil {
+		return receipt
+	}
+	return a.withForge(receipt, a.from)
+}
+
+func (a *accountedForge) overlay(receipt *db.PRContext) *db.PRContext {
+	if a == nil {
+		return receipt
+	}
+	return a.withForge(receipt, a.to)
+}
+
+func (a *accountedForge) commit(sctx *pipeline.StepContext) error {
+	if a == nil {
+		return nil
+	}
+	current, err := sctx.DB.GetRunPRContext(sctx.Run.ID)
+	if err != nil {
+		return err
+	}
+	if current == nil || current.ForgeHeadSHA != a.from {
+		return fmt.Errorf("PR comparison changed while refreshing forge head")
+	}
+	if err := sctx.DB.RefreshRunPRForgeHead(sctx.Run.ID, *current, a.to, a.accepted); err != nil {
+		return err
+	}
+	a.syncContext(sctx)
+	if sctx.Log != nil {
+		sctx.Log(fmt.Sprintf("accounted forge receipt: pinned=%s observed=%s generation=%d", a.from, a.to, current.Generation))
+	}
+	return nil
+}
+
+func (a *accountedForge) syncContext(sctx *pipeline.StepContext) {
+	if a == nil || sctx.PRContext == nil || sctx.PRContext.ForgeHeadSHA != a.from {
+		return
+	}
+	current, err := sctx.DB.GetRunPRContext(sctx.Run.ID)
+	if err == nil && current != nil && current.Generation == sctx.PRContext.Generation && current.ForgeHeadSHA == a.to {
+		sctx.PRContext = current
+	}
+}
+
+// reconcileAccountedForgeHead proves an observation and writes nothing.
 // trustedHead is an already pinned head or one independently attributed by the
-// caller. It only proves the observation; nothing is written. The returned
-// commit persists the refresh through one compare-and-swap and must run only
-// after every other check of the caller's transition has accepted it, so a
-// refused transition never leaves a forge observation behind.
-func reconcileAccountedForgeHead(sctx *pipeline.StepContext, previous *db.PRContext, candidate db.PRContextCandidate, trustedHead string) (*db.PRContext, func() error, error) {
-	noop := func() error { return nil }
+// caller. The returned receipt carries the observation in memory only; the
+// caller must hand the accountedForge to the transaction that accepts its
+// transition, so a refused or interrupted transition leaves the durable
+// receipt and pending rewind untouched.
+func reconcileAccountedForgeHead(sctx *pipeline.StepContext, previous *db.PRContext, candidate db.PRContextCandidate, trustedHead string) (*db.PRContext, *accountedForge, error) {
 	if previous == nil || previous.PRURL == "" || previous.ForgeHeadSHA == candidate.ForgeHeadSHA {
-		return previous, noop, nil
+		return previous, nil, nil
 	}
 	if !samePRContextIdentity(previous, candidate) {
-		return nil, noop, fmt.Errorf("pull request identity, source, or target changed alongside forge head")
+		return nil, nil, fmt.Errorf("pull request identity, source, or target changed alongside forge head")
 	}
 	accounted, err := runAccountsForPRHead(sctx, candidate.ForgeHeadSHA, previous.LocalHeadSHA)
 	acceptedLocal := ""
@@ -348,35 +416,13 @@ func reconcileAccountedForgeHead(sctx *pipeline.StepContext, previous *db.PRCont
 		acceptedLocal = trustedHead
 	}
 	if err != nil {
-		return nil, noop, err
+		return nil, nil, err
 	}
 	if !accounted {
-		return nil, noop, fmt.Errorf("unaccounted pull request head %s differs from pinned forge head %s and local head %s; reconcile the pull request head manually", candidate.ForgeHeadSHA, previous.ForgeHeadSHA, trustedHead)
+		return nil, nil, fmt.Errorf("unaccounted pull request head %s differs from pinned forge head %s and local head %s; reconcile the pull request head manually", candidate.ForgeHeadSHA, previous.ForgeHeadSHA, trustedHead)
 	}
-	original := *previous
-	refreshed := original
-	refreshed.ForgeHeadSHA = candidate.ForgeHeadSHA
-	if acceptedLocal != "" {
-		refreshed.PinnedLocalHeadSHA = acceptedLocal
-	}
-	done := false
-	commit := func() error {
-		if done {
-			return nil
-		}
-		if err := sctx.DB.RefreshRunPRForgeHead(sctx.Run.ID, original, candidate.ForgeHeadSHA, acceptedLocal); err != nil {
-			return err
-		}
-		done = true
-		if sctx.PRContext != nil && sctx.PRContext.Generation == original.Generation && sctx.PRContext.PRContextCandidate == original.PRContextCandidate {
-			sctx.PRContext = &refreshed
-		}
-		if sctx.Log != nil {
-			sctx.Log(fmt.Sprintf("accounted forge receipt: pinned=%s observed=%s local=%s generation=%d", original.ForgeHeadSHA, candidate.ForgeHeadSHA, trustedHead, original.Generation))
-		}
-		return nil
-	}
-	return &refreshed, commit, nil
+	pending := &accountedForge{from: previous.ForgeHeadSHA, to: candidate.ForgeHeadSHA, accepted: acceptedLocal}
+	return pending.overlay(previous), pending, nil
 }
 
 // pendingWithForgeObservation mirrors, in memory, the pending observation the
@@ -451,11 +497,16 @@ func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName
 		candidate.SourceRepo = previous.SourceRepo
 	}
 
-	commitForge := func() error { return nil }
+	var forge *accountedForge
+	defer func() {
+		if err == nil {
+			forge.syncContext(sctx)
+		}
+	}()
 	if !freshRetarget && candidate.PRURL != "" &&
 		(selection.State == "" || selection.State == scm.PRStateOpen) && samePRContextIdentity(previous, candidate) {
 		pinnedForge := previous.ForgeHeadSHA
-		previous, commitForge, err = reconcileAccountedForgeHead(sctx, previous, candidate, accountedForgeLocalHead(sctx, step, previous, candidate))
+		previous, forge, err = reconcileAccountedForgeHead(sctx, previous, candidate, accountedForgeLocalHead(sctx, step, previous, candidate))
 		if err != nil {
 			return pipeline.PRContextDecision{}, err
 		}
@@ -485,7 +536,7 @@ func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName
 			return pipeline.PRContextDecision{}, err
 		}
 		if keep {
-			return pipeline.PRContextDecision{Target: selection}, commitForge()
+			return pipeline.PRContextDecision{Target: selection}, forge.commit(sctx)
 		}
 	}
 	if pending != nil || targetChanged && !(freshRetarget && previous.TargetBranch != candidate.TargetBranch) && eligible {
@@ -511,11 +562,11 @@ func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName
 	if targetChanged && eligible && previous.LocalHeadSHA != candidate.LocalHeadSHA &&
 		sctx.PRContextAfterStep && step.Order() >= types.StepReview.Order() && step.Order() <= types.StepPush.Order() &&
 		sameRewindIdentity(previous, candidate) && candidate.LocalHeadSHA == sctx.Run.HeadSHA {
-		previous, err = attributeTargetAdvanceHead(sctx, previous, candidate)
+		previous, err = attributeTargetAdvanceHead(sctx, forge.stored(previous), candidate)
 		if err != nil {
 			return pipeline.PRContextDecision{}, err
 		}
-		commitForge = func() error { return nil }
+		previous = forge.overlay(previous)
 	}
 	// A completed REBASE also moves HEAD in the same window, and it REWRITES
 	// the head rather than extending it: the same logical changes land on a
@@ -531,19 +582,14 @@ func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName
 	if targetChanged && eligible && previous.LocalHeadSHA != candidate.LocalHeadSHA &&
 		sctx.PRContextAfterStep && step == types.StepRebase && sctx.PRContextRebaseCompleted &&
 		sameRewindIdentity(previous, candidate) && candidate.LocalHeadSHA == sctx.Run.HeadSHA {
-		previous, err = attributeRebasedHead(sctx, previous, candidate)
+		previous, err = attributeRebasedHead(sctx, forge.stored(previous), candidate)
 		if err != nil {
 			return pipeline.PRContextDecision{}, err
 		}
-		commitForge = func() error { return nil }
+		previous = forge.overlay(previous)
 	}
 	if targetChanged && !(freshRetarget && previous.TargetBranch != candidate.TargetBranch) && eligible {
-		if candidate.LocalHeadSHA == previous.LocalHeadSHA {
-			if err := commitForge(); err != nil {
-				return pipeline.PRContextDecision{}, err
-			}
-		}
-		_, bindErr := classifyTargetAdvance(sctx, step, selection, previous, candidate, observedSource)
+		_, bindErr := classifyTargetAdvance(sctx, step, selection, previous, candidate, observedSource, forge)
 		if bindErr != nil {
 			return pipeline.PRContextDecision{}, bindErr
 		}
@@ -558,7 +604,7 @@ func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName
 		if step != types.StepRebase {
 			decision.RestartFrom = types.StepRebase
 		}
-		return decision, commitForge()
+		return decision, forge.commit(sctx)
 	}
 	resetFrom := types.StepReview
 	if previous == nil || previous.TargetBranch != candidate.TargetBranch ||
@@ -643,16 +689,13 @@ func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName
 		!sameComparisonExceptNewPRIdentity(previous, candidate) && step.Order() > resetFrom.Order() {
 		return pipeline.PRContextDecision{}, fmt.Errorf("PR comparison changed after %s; start a new run for the current target and head", resetFrom)
 	}
-	if err := commitForge(); err != nil {
-		return pipeline.PRContextDecision{}, err
-	}
 	var bound db.PRContextBindResult
 	if pending != nil && step == types.StepRebase && sctx.PRContextRebaseCompleted {
-		bound, err = sctx.DB.CompleteRebasePRContext(sctx.Run.ID, candidate, previous.Generation)
+		bound, err = sctx.DB.CompleteRebasePRContext(sctx.Run.ID, candidate, previous.Generation, forge.options()...)
 	} else if forward {
-		bound, err = sctx.DB.AdvanceRunPRContext(sctx.Run.ID, candidate)
+		bound, err = sctx.DB.AdvanceRunPRContext(sctx.Run.ID, candidate, forge.options()...)
 	} else {
-		bound, err = sctx.DB.BindRunPRContext(sctx.Run.ID, candidate, resetFrom)
+		bound, err = sctx.DB.BindRunPRContext(sctx.Run.ID, candidate, resetFrom, forge.options()...)
 	}
 	if err != nil {
 		return pipeline.PRContextDecision{}, err
@@ -787,14 +830,14 @@ func verifyPRMutationComparison(sctx *pipeline.StepContext, host scm.Host, pr *s
 		facts.BaseBranch != receipt.TargetBranch {
 		return fmt.Errorf("live pull request differs from its comparison receipt before update")
 	}
-	commitForge := func() error { return nil }
+	var forge *accountedForge
 	if facts.HeadSHA != forgeHead {
 		if receipt.PRURL == "" {
 			return fmt.Errorf("live pull request differs from its unbound observation before update")
 		}
 		observed := receipt.PRContextCandidate
 		observed.ForgeHeadSHA = facts.HeadSHA
-		receipt, commitForge, err = reconcileAccountedForgeHead(sctx, receipt, observed, receipt.LocalHeadSHA)
+		receipt, forge, err = reconcileAccountedForgeHead(sctx, receipt, observed, receipt.LocalHeadSHA)
 		if err != nil {
 			return err
 		}
@@ -821,7 +864,7 @@ func verifyPRMutationComparison(sctx *pipeline.StepContext, host scm.Host, pr *s
 	if current != expected {
 		return fmt.Errorf("%w: live target commit, merge base, or diff differs from PR comparison receipt before update", errTargetComparisonAdvanced)
 	}
-	return commitForge()
+	return forge.commit(sctx)
 }
 
 // verifyCurrentPRComparison preserves the receipt instead of replacing it with

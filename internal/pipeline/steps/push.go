@@ -135,7 +135,7 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 				return nil, err
 			}
 			if receipt != nil {
-				commitForge := func() error { return nil }
+				var forge *accountedForge
 				if selected := sctx.PRTarget; selected != nil && selected.ForgeHeadSHA != "" {
 					observed := receipt.PRContextCandidate
 					observed.PRURL, observed.SourceBranch, observed.TargetBranch = selected.PRURL, selected.SourceBranch, selected.TargetBranch
@@ -143,7 +143,7 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 						observed.SourceRepo = selected.SourceRepo
 					}
 					observed.ForgeHeadSHA = selected.ForgeHeadSHA
-					receipt, commitForge, err = reconcileAccountedForgeHead(sctx, receipt, observed, headSHA)
+					receipt, forge, err = reconcileAccountedForgeHead(sctx, receipt, observed, headSHA)
 					if err != nil {
 						return nil, err
 					}
@@ -153,10 +153,7 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 					return nil, err
 				}
 				own.PRURL, own.SourceRepo, own.SourceBranch, own.ForgeHeadSHA = receipt.PRURL, receipt.SourceRepo, receipt.SourceBranch, receipt.ForgeHeadSHA
-				if err := commitForge(); err != nil {
-					return nil, err
-				}
-				if _, err := sctx.DB.AdvanceRunPRContext(sctx.Run.ID, own); err != nil {
+				if _, err := sctx.DB.AdvanceRunPRContext(sctx.Run.ID, own, forge.options()...); err != nil {
 					return nil, err
 				}
 			}
