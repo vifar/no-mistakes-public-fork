@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -94,9 +93,7 @@ func TestTestRepairCommitRestartsThroughReview(t *testing.T) {
 		}
 	})
 	ex.SetPRContextGuard(GuardPRContext)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	err := ex.Execute(ctx, c.Run, c.Repo, dir)
+	err := ex.Execute(t.Context(), c.Run, c.Repo, dir)
 	if err != nil || calls < 2 {
 		t.Fatalf("Test repair failed before requested Review restart: review calls=%d, fixes=%d, error=%v", calls, fixes, err)
 	}
@@ -134,9 +131,7 @@ func TestSecondAutomaticReviewFixUsesAdvancedReceipt(t *testing.T) {
 	enrollExecutorGate(t, p, c.Repo.ID)
 	ex := pipeline.NewExecutor(c.DB, p, c.Config, c.Agent, []pipeline.Step{&ReviewStep{}}, nil)
 	ex.SetPRContextGuard(GuardPRContext)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	err := ex.Execute(ctx, c.Run, c.Repo, dir)
+	err := ex.Execute(t.Context(), c.Run, c.Repo, dir)
 	if err != nil || fixes != 2 {
 		t.Fatalf("second Review auto-fix blocked by stale in-step receipt: reviews=%d fixes=%d error=%v", reviews, fixes, err)
 	}
