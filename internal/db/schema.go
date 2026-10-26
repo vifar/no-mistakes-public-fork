@@ -578,7 +578,7 @@ var additiveMigrationStatements = []string{
 	// refused rather than looped on.
 	`ALTER TABLE runs ADD COLUMN leftover_validation_commits INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE step_rounds ADD COLUMN fix_applied INTEGER`,
-	// The local head the run had pinned when the still-current forge observation
-	// was recorded; a later local rewrite must not lose that proof.
+	// Retain one prior accepted local head as proof across a later local rewrite;
+	// upgraded receipts start without this additional proof.
 	`ALTER TABLE run_pr_contexts ADD COLUMN pinned_local_head_sha TEXT`,
 }
