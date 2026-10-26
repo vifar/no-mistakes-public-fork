@@ -64,8 +64,8 @@ func TestCIMonitorAdvancesReceiptForItsOwnPublishedRepair(t *testing.T) {
 			}
 			sctx.PRContext = receipt
 			if tc.wantReady {
-				// A pending Review claim must remain resolvable when the
-				// monitor returns after observing the published repair.
+				// Review approved the pre-repair head with a pending CI claim.
+				// Readiness on the repair head must not let the repair settle it.
 				review, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
 				if err != nil {
 					t.Fatal(err)
@@ -168,34 +168,44 @@ func TestCIMonitorAdvancesReceiptForItsOwnPublishedRepair(t *testing.T) {
 			if err != nil {
 				t.Fatalf("readiness refused the run's own published CI repair: %v", err)
 			}
-			if errors.Is(err, errCIReadinessReceiptMissing) {
-				t.Fatal("readiness still reports a missing receipt")
+			// The proof serves readiness only. The stored receipt keeps naming
+			// the reviewed head, so step boundaries still see the repair as a
+			// head advance and handle it exactly as before.
+			if after.PRContextCandidate != receipt.PRContextCandidate || after.Generation != receipt.Generation {
+				t.Fatalf("readiness persisted the advance:\nbefore %+v\nafter  %+v", receipt, after)
 			}
-			if after.LocalHeadSHA != repairHead || after.ForgeHeadSHA != repairHead {
-				t.Fatalf("receipt heads = local %s forge %s, want the published repair %s", after.LocalHeadSHA, after.ForgeHeadSHA, repairHead)
+			proven, err := pipelineOwnedHeadComparison(sctx, after, mustGetRun(t, sctx), pipeline.PRTargetSelection{
+				PRURL: prURL, SourceRepo: "test/repo", SourceBranch: "feature", ForgeHeadSHA: repairHead, TargetBranch: "main"})
+			if err != nil || proven == nil {
+				t.Fatalf("published repair not proven: %+v, %v", proven, err)
 			}
-			if after.PRURL != receipt.PRURL || after.SourceRepo != receipt.SourceRepo || after.SourceBranch != receipt.SourceBranch ||
-				after.TargetBranch != receipt.TargetBranch || after.TargetSHA != receipt.TargetSHA || after.MergeBaseSHA != receipt.MergeBaseSHA {
-				t.Fatalf("advance changed the PR identity or target comparison:\nbefore %+v\nafter  %+v", receipt, after)
+			if proven.LocalHeadSHA != repairHead || proven.ForgeHeadSHA != repairHead || proven.PRURL != receipt.PRURL ||
+				proven.TargetBranch != receipt.TargetBranch || proven.TargetSHA != receipt.TargetSHA || proven.MergeBaseSHA != receipt.MergeBaseSHA ||
+				proven.DiffDigest == receipt.DiffDigest {
+				t.Fatalf("proven comparison does not describe the published repair at the same target:\nreceipt %+v\nproven  %+v", receipt, proven)
 			}
-			if after.DiffDigest == receipt.DiffDigest {
-				t.Fatal("advance kept the pre-repair diff digest")
-			}
-			// The oracle is the Review support contract: the same immutable
-			// check ID passing on a proven published descendant disproves the
-			// original claim, with the result bound to the new comparison.
+			// The oracle is the Review support contract: Review approved the
+			// pre-repair head, so a green check on the repair head must not
+			// resolve that claim. The repaired code returns to Review, even
+			// though readiness accepted the published repair.
+			sctx.Fixing = true
 			ownerHost := &supportCheckHost{Host: host, facts: scm.PRFacts{
 				PR: scm.PR{URL: prURL}, State: scm.PRStateOpen, SourceRepository: "test/repo",
 				SourceBranch: "feature", HeadSHA: repairHead, BaseBranch: "main",
 			}, checks: checks}
 			results, err := resolveCIReviewSupport(sctx, ownerHost, &scm.PR{URL: prURL, Number: "42"})
-			if err != nil || len(results) != 1 {
-				t.Fatalf("resolve Review claim after readiness advance: %+v, %v", results, err)
-			}
-			result := results[0].Support.OwnerResult
-			if result.Disposition != types.FindingSupportDispositionDisproven || result.HeadSHA != repairHead || result.Generation != after.Generation {
-				t.Fatalf("Review claim resolved against the wrong comparison: %+v", result)
+			if !errors.Is(err, errReviewSupportHeadAdvanced) || len(results) != 0 {
+				t.Fatalf("a published repair resolved the Review claim of the code it replaced instead of restarting Review: %+v, %v", results, err)
 			}
 		})
 	}
+}
+
+func mustGetRun(t *testing.T, sctx *pipeline.StepContext) *db.Run {
+	t.Helper()
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil || run == nil {
+		t.Fatalf("read run: %+v, %v", run, err)
+	}
+	return run
 }

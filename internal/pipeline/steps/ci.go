@@ -1376,23 +1376,32 @@ func verifyCIMonitorComparison(sctx *pipeline.StepContext, host scm.Host, checks
 		// the PR identity. An unproven advance - or a forge that has not
 		// reported the repair head yet - stays missing, so the bounded wait
 		// still applies.
-		advanced, err := advanceReceiptForPipelineOwnedHead(sctx, receipt, durable, selection)
+		//
+		// The proven comparison serves THIS readiness observation only and
+		// is never written. The receipt keeps naming the reviewed head, so
+		// every step boundary still sees the repair as a head advance: the
+		// repaired code returns to Review, and a later target move on this
+		// published run is refused exactly as before.
+		proven, err := pipelineOwnedHeadComparison(sctx, receipt, durable, selection)
 		if err != nil {
 			return err
 		}
-		if !advanced {
+		if proven == nil || durable == nil || durable.HeadSHA != proven.LocalHeadSHA {
 			return errCIReadinessReceiptMissing
 		}
-		if receipt, err = sctx.DB.GetRunPRContext(sctx.Run.ID); err != nil {
+		if err := scm.ValidateCheckHeads(checks, proven.LocalHeadSHA); err != nil {
 			return err
 		}
-		if receipt == nil || sctx.Run.HeadSHA != receipt.LocalHeadSHA {
-			return errCIReadinessReceiptMissing
+		live, err := readPRComparison(sctx, selection)
+		if err != nil {
+			return err
 		}
-		// The deferred Review-support resolver uses the active step's
-		// comparison too; it must follow the same proven receipt advance.
-		sctx.PRContext = receipt
-		sctx.Log(fmt.Sprintf("CI readiness comparison advanced to this run's published repair head %s", shortObjectID(receipt.LocalHeadSHA)))
+		expected := *proven
+		expected.PRURL, expected.SourceRepo, expected.SourceBranch, expected.ForgeHeadSHA = "", "", "", ""
+		if live != expected {
+			return fmt.Errorf("live target commit, merge base, or diff differs from this run's published repair comparison")
+		}
+		return nil
 	}
 	if durable == nil || durable.HeadSHA != receipt.LocalHeadSHA {
 		return fmt.Errorf("durable run head differs from CI readiness comparison")
