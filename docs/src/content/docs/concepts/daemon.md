@@ -35,6 +35,8 @@ flowchart LR
 
 On macOS this is a per-user `launchd` agent, on Linux a per-user `systemd` service, and on Windows a Task Scheduler task. The installed artifact names are scoped by `NM_HOME` with a short stable suffix, so the paths and service identifiers look like `~/Library/LaunchAgents/com.kunchenguid.no-mistakes.daemon.<suffix>.plist`, `~/.config/systemd/user/no-mistakes-daemon-<suffix>.service`, and the Windows task `no-mistakes-daemon-<suffix>`. That keeps multiple `no-mistakes` installs from colliding when they use different `NM_HOME` roots. Those service managers keep the daemon available across CLI invocations and restart it after `no-mistakes update` replaces the binary. A managed service starts with a minimal environment, so at daemon startup it resolves `PATH` and proxy variables from your login shell and the baked-in service definition; [Environment the daemon sees](/no-mistakes/reference/environment/#environment-the-daemon-sees) owns that resolution story. Restart the daemon after changing those values. If managed service install or startup is unavailable or fails, `no-mistakes` falls back to starting a detached daemon process instead.
 
+On Linux, a per-user `systemd` manager only runs while the user has a session, unless lingering is enabled for that user. On a headless machine reached over SSH, enable lingering once with `sudo loginctl enable-linger "$USER"` and check it with `loginctl show-user "$USER" -p Linger` (expect `Linger=yes`). Without lingering, the daemon stops when the last session closes and does not start at boot.
+
 ## Starting and stopping
 
 Most people do not need to manage the daemon directly. The usual commands
