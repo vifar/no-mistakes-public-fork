@@ -1347,18 +1347,8 @@ func verifyCIMonitorComparison(sctx *pipeline.StepContext, host scm.Host, checks
 	if err != nil {
 		return err
 	}
-	if receipt == nil || receipt.PRURL == "" || sctx.Run.HeadSHA != receipt.LocalHeadSHA {
+	if receipt == nil || receipt.PRURL == "" {
 		return errCIReadinessReceiptMissing
-	}
-	durable, err := sctx.DB.GetRun(sctx.Run.ID)
-	if err != nil {
-		return err
-	}
-	if durable == nil || durable.HeadSHA != receipt.LocalHeadSHA {
-		return fmt.Errorf("durable run head differs from CI readiness comparison")
-	}
-	if err := scm.ValidateCheckHeads(checks, receipt.LocalHeadSHA); err != nil {
-		return err
 	}
 	reader, ok := host.(scm.PRFactsReader)
 	if !ok {
@@ -1373,6 +1363,52 @@ func verifyCIMonitorComparison(sctx *pipeline.StepContext, host scm.Host, checks
 	}
 	selection := pipeline.PRTargetSelection{PRURL: facts.PR.URL, State: facts.State, SourceRepo: facts.SourceRepository,
 		SourceBranch: facts.SourceBranch, ForgeHeadSHA: facts.HeadSHA, TargetBranch: facts.BaseBranch}
+	durable, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		return err
+	}
+	if sctx.Run.HeadSHA != receipt.LocalHeadSHA {
+		// A CI repair this run published (publishRunHead) moves the run head
+		// past the receipt, and no step boundary re-pins it while the monitor
+		// watches the re-run (issue #87). The durable publication record is
+		// the proof, exactly as on the terminal path: the published head must
+		// descend from the receipt's head, be the live forge head, and keep
+		// the PR identity. An unproven advance - or a forge that has not
+		// reported the repair head yet - stays missing, so the bounded wait
+		// still applies.
+		//
+		// The proven comparison serves THIS readiness observation only and
+		// is never written. The receipt keeps naming the reviewed head, so
+		// every step boundary still sees the repair as a head advance: a
+		// pending Review CI claim sends repaired code back to Review, and a
+		// later target move on this published run is refused exactly as before.
+		proven, err := pipelineOwnedHeadComparison(sctx, receipt, durable, selection)
+		if err != nil {
+			return err
+		}
+		if proven == nil || durable == nil || durable.HeadSHA != proven.LocalHeadSHA {
+			return errCIReadinessReceiptMissing
+		}
+		if err := scm.ValidateCheckHeads(checks, proven.LocalHeadSHA); err != nil {
+			return err
+		}
+		live, err := readPRComparison(sctx, selection)
+		if err != nil {
+			return err
+		}
+		expected := *proven
+		expected.PRURL, expected.SourceRepo, expected.SourceBranch, expected.ForgeHeadSHA = "", "", "", ""
+		if live != expected {
+			return fmt.Errorf("live target commit, merge base, or diff differs from this run's published repair comparison")
+		}
+		return nil
+	}
+	if durable == nil || durable.HeadSHA != receipt.LocalHeadSHA {
+		return fmt.Errorf("durable run head differs from CI readiness comparison")
+	}
+	if err := scm.ValidateCheckHeads(checks, receipt.LocalHeadSHA); err != nil {
+		return err
+	}
 	return verifyCurrentPRComparison(sctx, host, selection, receipt, &facts)
 }
 
