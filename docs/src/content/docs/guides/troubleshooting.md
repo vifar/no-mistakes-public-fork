@@ -77,7 +77,7 @@ Commands that require daemon startup remain blocked until the entry is fixed: po
 ### Managed service logs
 
 - **macOS (launchd):** `launchctl list | grep no-mistakes` and check `~/Library/LaunchAgents/com.kunchenguid.no-mistakes.daemon.*.plist`
-- **Linux (systemd):** `systemctl --user status no-mistakes-daemon-*` and `journalctl --user -u no-mistakes-daemon-* -f`
+- **Linux (systemd):** `systemctl --user status no-mistakes-daemon-*` and `journalctl --user -u no-mistakes-daemon-* -f`. If the daemon disappears after logout or is not running after a reboot, check lingering with `loginctl show-user "$USER" -p Linger` (expect `Linger=yes`) and enable it once with `sudo loginctl enable-linger "$USER"`.
 - **Windows (Task Scheduler):** `schtasks /query /tn "no-mistakes-daemon-*"`
 
 ### `NM_HOME` collisions
