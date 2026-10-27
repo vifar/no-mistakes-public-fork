@@ -572,21 +572,30 @@ Risk assessment (after listing all findings):
 		// the same missing evidence as an empty or partial one (VISION.md R4:
 		// every review pass covers the complete change).
 		//
-		// Before parking, one focused completion turn reviews exactly the
-		// uncovered files and merges its record into this round's. Self-reported
-		// coverage is lossy in exactly this way on real multi-file diffs (a
-		// 15-file branch saw three consecutive zero-finding rounds each omit a
-		// different file), and the only non-waiver path used to be a full
-		// re-review that re-rolled the same dice after a fixer round with
-		// nothing to fix. The completion turn keeps the operator out of that
-		// loop; whatever is still uncovered after it parks with the explicit
-		// remainder named, so a partial or fabricated record never approves.
-		completed, err := s.completeCoverageGaps(sctx, turnPrompt, sessionRole, opts, findings, reviewable, askDir)
-		if err != nil {
-			return nil, err
+		// Keep coverage earned within this round: each focused pass reviews
+		// only the remaining files. A fresh full review round would discard
+		// that progress and can keep reshuffling the unverified set forever.
+		// Bound the calls and stop on no progress or a blocking finding; the
+		// strict union check still refuses partial or fabricated coverage.
+		for pass := 1; pass <= reviewCoverageMaxPasses && !sctx.EvalReplay; pass++ {
+			missingBefore := len(uncoveredReviewablePaths(findings.ReviewedPaths, reviewable))
+			completed, err := s.completeCoverageGaps(sctx, turnPrompt, sessionRole, opts, findings, reviewable, askDir)
+			if err != nil {
+				return nil, err
+			}
+			findings = completed
+			needsApproval = hasBlockingReviewFindings(findings.Items)
+			if needsApproval || reviewedPathsCoverReviewable(findings.ReviewedPaths, reviewable) {
+				break
+			}
+			if len(uncoveredReviewablePaths(findings.ReviewedPaths, reviewable)) >= missingBefore {
+				sctx.Log("focused coverage pass made no progress; parking on the incomplete coverage record")
+				break
+			}
+			if pass == reviewCoverageMaxPasses {
+				sctx.Log(fmt.Sprintf("reached the limit of %d focused coverage passes; parking on the incomplete coverage record", reviewCoverageMaxPasses))
+			}
 		}
-		findings = completed
-		needsApproval = hasBlockingReviewFindings(findings.Items)
 		if !needsApproval && !reviewedPathsCoverReviewable(findings.ReviewedPaths, reviewable) {
 			sctx.Log(uncoveredReviewMessage(findings.ReviewedPaths, reviewable))
 			needsApproval = true
@@ -609,6 +618,9 @@ Risk assessment (after listing all findings):
 // reviewAnalyzerMaxAttempts bounds the review turns one Execute spends on
 // output that fails validation, including the first.
 const reviewAnalyzerMaxAttempts = 3
+
+// reviewCoverageMaxPasses bounds focused completion turns within one round.
+const reviewCoverageMaxPasses = 5
 
 // coveragePathLine renders one branch-controlled path as a single prompt line.
 // A git path may itself contain an embedded newline (changedPathList preserves
@@ -677,7 +689,7 @@ func reviewCoverageCompletionSection(missing []string) string {
 }
 
 // completeCoverageGaps runs at most one focused review turn over exactly the
-// reviewable files the just-finished pass did not cover, and merges its
+// reviewable files the accumulated round has not covered, and merges its
 // findings and coverage record into the round's. It runs only on a round that
 // would otherwise park SOLELY on a coverage gap (zero blocking findings), so
 // a healthy full-coverage review costs nothing extra and a round with
@@ -688,7 +700,7 @@ func reviewCoverageCompletionSection(missing []string) string {
 // review was readable, and an optional completion that crashes must not turn
 // it into either a certification it did not earn or a lost verdict. The merge
 // keeps the strict coverage rule intact - the union is re-checked by
-// reviewedPathsCoverReviewable, so an out-of-scope entry from either turn
+// reviewedPathsCoverReviewable, so an out-of-scope entry from any turn
 // still fails the round and is named in the park message.
 func (s *ReviewStep) completeCoverageGaps(sctx *pipeline.StepContext, basePrompt string, role pipeline.SessionRole, opts agent.RunOpts, findings Findings, reviewable []string, askDir string) (Findings, error) {
 	if sctx.EvalReplay {
@@ -708,11 +720,10 @@ func (s *ReviewStep) completeCoverageGaps(sctx *pipeline.StepContext, basePrompt
 		// reviewed_paths entries, which more review cannot cure.
 		return findings, nil
 	}
-	if hasInvalidReviewedPath(findings.ReviewedPaths) {
-		// The record already carries an entry that is not a path at all. That
-		// entry makes reviewedPathsCoverReviewable fail no matter what the
-		// completion turn covers, so the round can only park; running the turn
-		// would spend an agent call on an uncurable record.
+	if hasInvalidReviewedPath(findings.ReviewedPaths) || len(uncoveredReviewablePaths(reviewable, findings.ReviewedPaths)) > 0 {
+		// Checking the reported paths against the trusted set also catches
+		// out-of-scope entries. Invalid or out-of-scope evidence cannot be
+		// cured by another completion turn, so do not spend another call.
 		return findings, nil
 	}
 	sctx.Log(fmt.Sprintf("review coverage incomplete; running one focused review pass over %d unverified file(s): %s", len(missing), strings.Join(missing, ", ")))
@@ -750,9 +761,9 @@ func (s *ReviewStep) completeCoverageGaps(sctx *pipeline.StepContext, basePrompt
 	// The completion turn's prompt is the full review prompt, protocol section
 	// included, so it can legitimately ask its own substantiated question about
 	// the file it was sent to cover. That question lands in the same askDir
-	// this round already read once above; re-reading it here is the only way
-	// such a question is ever seen, since nothing reads the conversation again
-	// after this turn returns.
+	// this round has already read; re-read it before the caller decides whether
+	// to run another completion pass or certify the head, so an open question
+	// parks the round immediately.
 	if err := s.appendOpenReviewQuestionFindings(sctx, askDir, &findings); err != nil {
 		return findings, err
 	}
@@ -760,9 +771,9 @@ func (s *ReviewStep) completeCoverageGaps(sctx *pipeline.StepContext, basePrompt
 }
 
 // mergeReviewRisk reconciles the round's risk assessment with a focused
-// completion turn's own assessment of the file(s) it covered. The two turns
-// judge disjoint parts of the same change, so the merged assessment is
-// whichever one is worse, taken as a whole triple: a completion turn that
+// completion turn's own assessment of the file(s) it covered. Earlier passes
+// and this turn judge parts of the same change, so the merged assessment is
+// whichever is worse, taken as a whole triple: a completion turn that
 // finds a real defect the first pass missed must not leave the round
 // reporting the first pass's now-stale, lower risk level and rationale.
 //

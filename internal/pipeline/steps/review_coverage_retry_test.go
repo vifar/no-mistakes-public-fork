@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -20,7 +21,7 @@ import (
 // followed by a full re-review that re-rolled the same dice. A real 15-file
 // branch parked three consecutive rounds this way, each time on a different
 // omitted file. The repair enumerates the coverage contract in the prompt and
-// adds one bounded focused completion turn; the gate's fail-closed park on
+// adds bounded focused completion turns; the gate's fail-closed park on
 // anything still uncovered is unchanged.
 
 const coverageCompletionMarker = "Focused coverage completion:"
@@ -95,6 +96,115 @@ func coverageTurnName(onCompletion bool) string {
 		return "completion"
 	}
 	return "review"
+}
+
+func coverageRepo(t *testing.T, count int) (string, string, string, []string) {
+	t.Helper()
+	dir, baseSHA, _ := setupGitRepo(t)
+	paths := []string{"feature.txt"}
+	for i := 2; i <= count; i++ {
+		name := fmt.Sprintf("feature%d.txt", i)
+		if err := os.WriteFile(dir+"/"+name, []byte("feature code\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, name)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "add coverage files")
+	return dir, baseSHA, gitCmd(t, dir, "rev-parse", "HEAD"), paths
+}
+
+func TestReviewStep_CoverageCompletionConvergesWithinOneRound(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA, paths := coverageRepo(t, 3)
+	ag := newCoverageScriptedAgent(t, []coverageScript{
+		{output: coverageFindingJSON(paths[:1])},
+		{onCompletion: true, output: coverageFindingJSON(paths[1:2])},
+		{onCompletion: true, output: coverageFindingJSON(paths[2:])},
+	})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	outcome, err := (&ReviewStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if outcome.NeedsApproval || len(uncoveredReviewablePaths(outcome.ReviewedPaths, paths)) != 0 {
+		t.Fatalf("one round must converge without a waiver: approval = %v, reviewed = %v", outcome.NeedsApproval, outcome.ReviewedPaths)
+	}
+	if len(ag.calls) != 3 {
+		t.Fatalf("review invocations = %d, want 3", len(ag.calls))
+	}
+	for i, call := range ag.calls[1:] {
+		want := ag.calls[0].Prompt + reviewCoverageCompletionSection(paths[i+1:])
+		if call.Prompt != want || call.Purpose != "review-coverage" {
+			t.Fatalf("completion %d must target only the still-unverified files with the full review context", i+1)
+		}
+	}
+}
+
+func TestReviewStep_CoverageCompletionNoProgressParksRemainingFiles(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA, paths := coverageRepo(t, 4)
+	ag := newCoverageScriptedAgent(t, []coverageScript{
+		{output: coverageFindingJSON(paths[:1])},
+		{onCompletion: true, output: coverageFindingJSON(paths[1:2])},
+		// Repeating an already verified path is not progress.
+		{onCompletion: true, output: coverageFindingJSON(paths[1:2])},
+	})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	var logs []string
+	sctx.Log = func(msg string) { logs = append(logs, msg) }
+
+	outcome, err := (&ReviewStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("a no-progress pass must park")
+	}
+	if len(ag.calls) != 3 {
+		t.Fatalf("review invocations = %d, want 3 (stop at the no-progress pass)", len(ag.calls))
+	}
+	if got := strings.Join(outcome.ReviewedPaths, ", "); got != strings.Join(paths[:2], ", ") {
+		t.Fatalf("reviewed paths = %s, want only the paths actually verified", got)
+	}
+	joined := strings.Join(logs, "\n")
+	if !strings.Contains(joined, "no progress") || !strings.Contains(joined, "2 reviewable file(s) unverified: feature3.txt, feature4.txt") {
+		t.Fatalf("park must explain no progress and list the remaining files; logs:\n%s", joined)
+	}
+}
+
+func TestReviewStep_CoverageCompletionPassBoundParksRemainingFiles(t *testing.T) {
+	t.Parallel()
+	// Five completion turns may run, even if each continues to make progress.
+	const passLimit = 5
+	dir, baseSHA, headSHA, paths := coverageRepo(t, passLimit+3)
+	scripts := []coverageScript{{output: coverageFindingJSON(paths[:1])}}
+	for i := 1; i <= passLimit; i++ {
+		scripts = append(scripts, coverageScript{onCompletion: true, output: coverageFindingJSON(paths[i : i+1])})
+	}
+	ag := newCoverageScriptedAgent(t, scripts)
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	var logs []string
+	sctx.Log = func(msg string) { logs = append(logs, msg) }
+
+	outcome, err := (&ReviewStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("exhausting the completion bound with unverified files must park")
+	}
+	if len(ag.calls) != passLimit+1 {
+		t.Fatalf("review invocations = %d, want %d (review + bounded completion passes)", len(ag.calls), passLimit+1)
+	}
+	if got := strings.Join(outcome.ReviewedPaths, ", "); got != strings.Join(paths[:passLimit+1], ", ") {
+		t.Fatalf("reviewed paths = %s, want only the paths actually verified", got)
+	}
+	joined := strings.Join(logs, "\n")
+	if !strings.Contains(joined, "reached the limit of 5 focused coverage passes") || !strings.Contains(joined, "2 reviewable file(s) unverified: feature7.txt, feature8.txt") {
+		t.Fatalf("park must explain the bound and list the remaining files; logs:\n%s", joined)
+	}
 }
 
 // TestReviewStep_PartialCoverageCompletesInOneFocusedPass is the red test for
