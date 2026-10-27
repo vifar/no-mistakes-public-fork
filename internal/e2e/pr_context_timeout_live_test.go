@@ -100,8 +100,9 @@ exec %s "$@"
 				time.Sleep(200 * time.Millisecond)
 			}
 			retained, err := database.GetRetainedPRTarget(run.ID, receipt)
-			if err != nil || retained != target || !strings.Contains(j.ciLog(run.ID), "transient keyring timeout; retry 2/3 in 1s") {
-				t.Fatalf("timeout did not recover within the same read: retained=%s want=%s error=%v\n%s", retained, target, err, j.ciLog(run.ID))
+			_, faultErr := os.Stat(consumed)
+			if err != nil || retained != target || faultErr != nil || !strings.Contains(j.ciLog(run.ID), "transient keyring timeout; retry 2/3 in 1s") {
+				t.Fatalf("timeout did not recover within the same read: retained=%s want=%s error=%v fault=%v\n%s", retained, target, err, faultErr, j.ciLog(run.ID))
 			}
 			current, err := database.GetRunPRContext(run.ID)
 			if err != nil || !reflect.DeepEqual(current, receipt) || j.h.UpstreamBranchSHA(branch) != head || livePRBody(t, j.statePath, branch) != body {

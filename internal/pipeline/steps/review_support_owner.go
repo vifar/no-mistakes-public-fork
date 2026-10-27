@@ -68,8 +68,15 @@ func currentReviewSupportClaims(sctx *pipeline.StepContext, claimType types.Find
 	if err != nil {
 		return nil, nil, err
 	}
-	if receipt != nil && run != nil && sctx.PRContext != nil &&
-		sctx.Fixing && receipt.LocalHeadSHA != sctx.Run.HeadSHA && run.HeadSHA == sctx.Run.HeadSHA {
+	// A repair this run committed moved the head past what Review approved,
+	// so the repaired code must be reviewed again before any claim is judged.
+	// Receipt lag and the durable Review-approved head independently expose
+	// the advance. CI readiness's ephemeral publication proof must never let
+	// a repair resolve the claims of the code it replaced.
+	reviewedHeadMoved := run != nil && run.ReviewApprovedHeadSHA != nil &&
+		strings.TrimSpace(*run.ReviewApprovedHeadSHA) != "" && *run.ReviewApprovedHeadSHA != sctx.Run.HeadSHA
+	if receipt != nil && run != nil && sctx.PRContext != nil && sctx.Fixing && run.HeadSHA == sctx.Run.HeadSHA &&
+		(receipt.LocalHeadSHA != sctx.Run.HeadSHA || reviewedHeadMoved) {
 		actualHead, headErr := git.HeadSHA(sctx.Ctx, sctx.WorkDir)
 		if headErr == nil && actualHead == sctx.Run.HeadSHA {
 			return nil, nil, errReviewSupportHeadAdvanced

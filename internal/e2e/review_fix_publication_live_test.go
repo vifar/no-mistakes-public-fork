@@ -336,6 +336,10 @@ func TestReviewFixOversizedSummaryLiveJourney(t *testing.T) {
 	if run.Status != types.RunFailed || run.Error == nil || !strings.Contains(*run.Error, "commit summary must not exceed 4096 bytes") {
 		t.Fatalf("oversized report outcome = %s, error=%v", run.Status, deref(run.Error))
 	}
+	// Check both the recorded outcome and the restored worktree.
+	if run.HeadSHA != submitted {
+		t.Fatalf("rejected repair changed recorded HEAD: %s, want %s", run.HeadSHA, submitted)
+	}
 	worktree := paths.WithRoot(h.NMHome).WorktreeDir(run.RepoID, run.ID)
 	content, err := os.ReadFile(filepath.Join(worktree, "feature.txt"))
 	if err != nil || string(content) != "unsafe\n" {
