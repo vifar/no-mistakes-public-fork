@@ -1379,9 +1379,9 @@ func verifyCIMonitorComparison(sctx *pipeline.StepContext, host scm.Host, checks
 		//
 		// The proven comparison serves THIS readiness observation only and
 		// is never written. The receipt keeps naming the reviewed head, so
-		// every step boundary still sees the repair as a head advance: the
-		// repaired code returns to Review, and a later target move on this
-		// published run is refused exactly as before.
+		// every step boundary still sees the repair as a head advance: a
+		// pending Review CI claim sends repaired code back to Review, and a
+		// later target move on this published run is refused exactly as before.
 		proven, err := pipelineOwnedHeadComparison(sctx, receipt, durable, selection)
 		if err != nil {
 			return err
