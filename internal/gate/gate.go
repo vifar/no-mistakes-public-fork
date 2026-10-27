@@ -25,8 +25,70 @@ var ensureGateHooksPathIsolation = git.EnsureHooksPathIsolation
 
 var sweepRunWorktrees = procreap.SweepRunWorktrees
 
+// insertRepoRecord writes the registration row of a fresh gate. It is a seam
+// so a test can inject the failure a duplicate repo ID produces (the UNIQUE
+// constraint on repos.id) without racing two real registrations against each
+// other.
+var insertRepoRecord = func(d *db.DB, id, workingPath, upstreamURL, forkURL, branch string) (*db.Repo, error) {
+	return d.InsertRepoWithIDAndFork(id, workingPath, upstreamURL, forkURL, branch)
+}
+
 // RemoteName is the name of the git remote that points to the local gate.
 const RemoteName = "no-mistakes"
+
+// DuplicateRepoIDError reports that the deterministic repo ID a checkout
+// derives is already owned by another registered checkout.
+//
+// The ID is derived from the absolute path of the checkout, so a copy
+// restored at the path a registration was moved away from derives the very
+// ID that registration still holds - and that ID names the shared gate
+// directory holding the other checkout's objects, refs and linked-worktree
+// administration. Provisioning it would write into that gate, and a rollback
+// would delete it (issue #160).
+//
+// The error names the registered path because that is where the operator can
+// act: the gate belongs to the registered checkout, and a checkout that wants
+// a gate of its own needs a path of its own.
+type DuplicateRepoIDError struct {
+	// ID is the deterministic repo ID both checkouts derive.
+	ID string
+	// CallerPath is the checkout that asked to be initialized.
+	CallerPath string
+	// RegisteredPath is the checkout the ID already belongs to.
+	RegisteredPath string
+	// GateDir is the shared gate directory the ID names.
+	GateDir string
+}
+
+func (e *DuplicateRepoIDError) Error() string {
+	return fmt.Sprintf(
+		"repo ID %s is already registered for %s; %s is a different checkout and cannot use that gate (%s)\n\n"+
+			"Run no-mistakes init from the registered checkout, or move this checkout to a path of its own.",
+		e.ID, e.RegisteredPath, e.CallerPath, e.GateDir)
+}
+
+// UnregisteredGateError reports that the gate path a fresh init would use is
+// already taken although no registration owns its repo ID, and that the
+// checkout's gate remote does not point at it.
+//
+// Whatever is there - a gate left behind by an interrupted init or a removed
+// registration, or something the operator put there - is not this init's to
+// rewrite or delete, so the init stops before touching it.
+type UnregisteredGateError struct {
+	// ID is the repo ID the checkout derives.
+	ID string
+	// CallerPath is the checkout that asked to be initialized.
+	CallerPath string
+	// GateDir is the gate path that is already taken.
+	GateDir string
+}
+
+func (e *UnregisteredGateError) Error() string {
+	return fmt.Sprintf(
+		"gate path %s for repo ID %s already exists but no registered checkout owns it, and %s is not wired to it\n\n"+
+			"Inspect it and move it away if it is not needed, then re-run no-mistakes init.",
+		e.GateDir, e.ID, e.CallerPath)
+}
 
 // repoID generates a deterministic 12-char hex ID from an absolute path.
 func repoID(absPath string) string {
@@ -45,8 +107,10 @@ func repoID(absPath string) string {
 // isolation, or restoring a missing remote) instead of failing. This includes
 // a working directory that was renamed or moved since the gate was created:
 // the gate identified by the leftover no-mistakes remote is reattached at the
-// new path, preserving its run history. The returned bool reports whether a
-// new gate was created (true) or an existing one was refreshed (false).
+// new path, preserving its run history. The returned bool reports whether this
+// call created a new gate directory (true) or registered or refreshed a gate
+// that already existed (false). Callers may only roll back (eject) a gate when
+// it is true: a gate that was already there is never this call's to delete.
 func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Repo, bool, error) {
 	return InitWithFork(ctx, d, p, workDir, "")
 }
@@ -69,6 +133,15 @@ func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkUR
 		return nil, false, fmt.Errorf("find git root: %w", err)
 	}
 	absRoot := gitRoot
+
+	// Hold the init lock from the first registry read until this attempt has
+	// registered or rolled back, so the ownership decided below cannot change
+	// under it (issue #160).
+	unlock, err := acquireInitLock(ctx, p)
+	if err != nil {
+		return nil, false, err
+	}
+	defer unlock()
 
 	// Look up any existing gate so we know whether this is a fresh init or a
 	// refresh, and so we never tear down a working gate on a repair failure.
@@ -132,16 +205,68 @@ func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkUR
 	}
 	bareDir := p.RepoDir(id)
 
+	// A deterministic ID can already belong to another registration: the
+	// caller is a copy restored at the path a registration was moved away
+	// from, or two checkouts race for the same path. Decide that before
+	// anything is created, so a refusal cannot write into the other
+	// registration's shared gate - and so the rollback below has nothing
+	// of theirs to remove (issue #160).
+	if existing == nil {
+		owner, err := d.GetRepo(id)
+		if err != nil {
+			return nil, false, fmt.Errorf("check repo id ownership: %w", err)
+		}
+		if owner != nil {
+			return nil, false, &DuplicateRepoIDError{
+				ID:             id,
+				CallerPath:     absRoot,
+				RegisteredPath: owner.WorkingPath,
+				GateDir:        bareDir,
+			}
+		}
+	}
+
+	// The gate directory is this attempt's to remove only when this attempt
+	// created it. Anything already at that path - a directory, a file, a
+	// symlink - belongs to another registration, to an earlier interrupted
+	// attempt or to the operator.
+	gatePresent, err := pathPresent(bareDir)
+	if err != nil {
+		return nil, false, fmt.Errorf("inspect gate directory: %w", err)
+	}
+	if gatePresent && existing == nil {
+		// No registration owns the ID, yet its gate path is taken. Adopt it
+		// only when it is this checkout's own gate - a directory its gate
+		// remote already points at, as after the registry was lost. Anything
+		// else is not this init's to provision, because provisioning rewrites
+		// the gate's configuration and hooks.
+		if !dirExists(bareDir) || !remotePointsAt(ctx, absRoot, bareDir) {
+			return nil, false, &UnregisteredGateError{ID: id, CallerPath: absRoot, GateDir: bareDir}
+		}
+	}
+
+	// The gate remote of the working repo is restored to what it was when
+	// this attempt fails, so a failed init leaves the caller's checkout as
+	// it found it.
+	priorRemote := snapshotWorkingRemote(ctx, absRoot)
+
+	gateDirCreated := false
+	if !gatePresent {
+		// Create the directory here, exclusively, so "this attempt created
+		// it" is a fact rather than an inference.
+		if err := os.MkdirAll(filepath.Dir(bareDir), 0o755); err != nil {
+			return nil, false, fmt.Errorf("create repos directory: %w", err)
+		}
+		if err := os.Mkdir(bareDir, 0o777); err != nil {
+			return nil, false, fmt.Errorf("create gate directory: %w", err)
+		}
+		gateDirCreated = true
+	}
+
 	// Provision (or repair) the on-disk gate. This is idempotent.
 	if err := provisionGate(ctx, bareDir, absRoot, upstreamURL, p.ReposDir(), existing != nil); err != nil {
-		// Only tear down a gate we created in this call; never destroy an
-		// already-initialized gate when a repair pass fails.
-		if existing == nil {
-			if remoteURL, remoteErr := git.GetRemoteURL(ctx, absRoot, RemoteName); remoteErr == nil && remoteURL == bareDir {
-				git.RemoveRemote(ctx, absRoot, RemoteName)
-			}
-			os.RemoveAll(bareDir)
-		}
+		rollbackWorkingRemote(ctx, absRoot, priorRemote)
+		rollbackGate(d, bareDir, id, gateDirCreated)
 		return nil, false, err
 	}
 
@@ -163,16 +288,138 @@ func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkUR
 	}
 
 	// Insert repo record with deterministic ID.
-	repo, err := d.InsertRepoWithIDAndFork(id, absRoot, redactedUpstreamURL, forkURL, branch)
+	repo, err := insertRepoRecord(d, id, absRoot, redactedUpstreamURL, forkURL, branch)
 	if err != nil {
-		// Rollback: remove remote and bare repo.
-		git.RemoveRemote(ctx, absRoot, RemoteName)
-		os.RemoveAll(bareDir)
+		// Rollback: undo what this attempt added, and nothing else.
+		rollbackWorkingRemote(ctx, absRoot, priorRemote)
+		rollbackGate(d, bareDir, id, gateDirCreated)
 		return nil, false, fmt.Errorf("insert repo: %w", err)
 	}
 
 	slog.Info("gate initialized", "repo_id", id, "path", absRoot, "upstream", redactedUpstreamURL)
-	return repo, true, nil
+	return repo, gateDirCreated, nil
+}
+
+// pathPresent reports whether anything at all - a directory, a file or a
+// symlink, dangling or not - is at path.
+func pathPresent(path string) (bool, error) {
+	_, err := os.Lstat(path)
+	switch {
+	case err == nil:
+		return true, nil
+	case os.IsNotExist(err):
+		return false, nil
+	default:
+		return false, err
+	}
+}
+
+// dirExists reports whether a path is a real directory, not a symlink to one.
+func dirExists(path string) bool {
+	info, err := os.Lstat(path)
+	return err == nil && info.IsDir()
+}
+
+// remotePointsAt reports whether the gate remote of a working repo resolves
+// to bareDir.
+func remotePointsAt(ctx context.Context, absRoot, bareDir string) bool {
+	url, err := git.GetRemoteURL(ctx, absRoot, RemoteName)
+	return err == nil && url == bareDir
+}
+
+// remoteState is the literal configuration of a working repo's gate remote:
+// whether it exists and the url values written in its config, exactly as
+// written (url.*.insteadOf is NOT applied, so an alias stays an alias).
+type remoteState struct {
+	// known is false when the state could not be read; a rollback then
+	// leaves the remote alone rather than "restore" a state it never saw.
+	known   bool
+	present bool
+	urls    []string
+}
+
+func (s remoteState) equal(o remoteState) bool {
+	if s.known != o.known || s.present != o.present || len(s.urls) != len(o.urls) {
+		return false
+	}
+	for i := range s.urls {
+		if s.urls[i] != o.urls[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// snapshotWorkingRemote reads the literal state of a working repo's gate
+// remote.
+func snapshotWorkingRemote(ctx context.Context, absRoot string) remoteState {
+	has, err := git.HasRemote(ctx, absRoot, RemoteName)
+	if err != nil {
+		return remoteState{}
+	}
+	if !has {
+		return remoteState{known: true}
+	}
+	// A remote with no url key reads as an error here; it is still a
+	// remote, with no urls.
+	urls, _ := git.GetConfiguredRemoteURLs(ctx, absRoot, RemoteName)
+	return remoteState{known: true, present: true, urls: urls}
+}
+
+// rollbackWorkingRemote returns the gate remote of a working repo to the
+// literal state this attempt found it in - but only when this attempt changed
+// it. An unchanged remote is not written at all, so an alias, a multi-valued
+// url or anything else the operator configured survives a failed init as it
+// was.
+//
+// The remote is part of the caller's checkout, not of the gate, and a failed
+// init has no business leaving a checkout wired to a gate that is not there.
+func rollbackWorkingRemote(ctx context.Context, absRoot string, prior remoteState) {
+	if !prior.known {
+		return
+	}
+	now := snapshotWorkingRemote(ctx, absRoot)
+	if !now.known || now.equal(prior) {
+		return
+	}
+	if !prior.present {
+		// This attempt added the remote; take it away again.
+		_ = git.RemoveRemote(ctx, absRoot, RemoteName)
+		return
+	}
+	key := "remote." + RemoteName + ".url"
+	_, _ = git.Run(ctx, absRoot, "config", "--unset-all", key)
+	for _, url := range prior.urls {
+		_, _ = git.Run(ctx, absRoot, "config", "--add", key, url)
+	}
+}
+
+// rollbackGate removes the gate directory of a failed init - but only when
+// this attempt created it and no registration owns it.
+//
+// Anything that was already at that path belongs to another registration, to
+// an earlier interrupted attempt or to the operator, and removing it is the
+// destruction issue #160 describes: the database row and the run records
+// stayed while the objects, the refs and the linked-worktree administration
+// of the gate were deleted.
+//
+// The init lock keeps other inits out while this attempt runs, but the
+// registry is still consulted before the directory goes: a registration that
+// owns the ID owns its gate, however it got there, and an unreadable registry
+// leaves the directory alone as well - an owner that cannot be ruled out is
+// an owner that must not be destroyed.
+func rollbackGate(d *db.DB, bareDir, id string, created bool) {
+	if !created {
+		return
+	}
+	owner, err := d.GetRepo(id)
+	if err != nil {
+		return
+	}
+	if owner != nil {
+		return
+	}
+	os.RemoveAll(bareDir)
 }
 
 func validateForkRouting(ctx context.Context, upstreamURL, forkURL string) error {
@@ -313,6 +560,14 @@ func Eject(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.R
 		return nil, fmt.Errorf("find git root: %w", err)
 	}
 	absRoot := gitRoot
+
+	// Eject removes a gate directory, so it takes the init lock: an init
+	// deciding who owns a repo ID must not see the gate vanish under it.
+	unlock, err := acquireInitLock(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 
 	// Look up repo in DB.
 	repo, err := d.GetRepoByPath(absRoot)

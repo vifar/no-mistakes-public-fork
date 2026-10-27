@@ -70,8 +70,7 @@ Without fork routing, you can bypass the gate for a specific push with `git push
 With `--fork-url`, bypassing the gate means pushing to your fork URL yourself.
 
 You can safely re-run `no-mistakes init` later to refresh gate wiring or update the installed agent skill after an upgrade.
-If you rename or move the repo directory, re-run `no-mistakes init` from the new path to reattach the existing gate and keep its run history.
-Copied repos get their own fresh gate while the original path still exists.
+After moving or copying a checkout, follow the [gate model's reattachment and ownership rules](/no-mistakes/concepts/gate-model/#what-no-mistakes-init-does) before re-running `init`.
 
 ## 4. Push through the gate
 
