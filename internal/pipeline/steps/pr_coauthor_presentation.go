@@ -10,14 +10,9 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// PreservedHumanCoauthorLabel is the published label for a preserved human
-// co-author. The commit keeps the trailer verbatim; only the published body
-// renders it as a labelled field, so no text check can mistake the preserved
-// human co-author for AI attribution.
-//
-// It is the same label the shared publication rule renders (main's
-// "co-author (quoted):"), so the published body carries ONE form of it
-// whichever path published it.
+// PreservedHumanCoauthorLabel labels raw human co-author trailers in published
+// text. The PR section of docs/src/content/docs/reference/pipeline-steps.md
+// owns the presentation rules, including the formatted inline prose exception.
 const PreservedHumanCoauthorLabel = "co-author (quoted):"
 
 // prAIAttributionNotice is what a published generated section shows in place
@@ -26,13 +21,13 @@ const PreservedHumanCoauthorLabel = "co-author (quoted):"
 // survives in the published body.
 const prAIAttributionNotice = "<no-mistakes: AI attribution line neutralized>"
 
-// prDisplayText renders one published text block: AI attribution and the
-// exactly configured trailers are removed, a preserved human co-author becomes a
-// labelled field, and ordinary prose is left alone.
+// prDisplayText applies the PR attribution display rules from
+// docs/src/content/docs/reference/pipeline-steps.md to one published text block.
 //
 // A recorded payload keeps its line breaks as the two-character escape, so its
 // entries are one line to a line-based scanner. Such a line is filtered through
-// its own string values, and the payload keeps the bytes it was recorded with.
+// its own string values. Only changed strings are re-encoded; unrelated payload
+// bytes stay as recorded.
 func prDisplayText(text string, configuredTrailers ...string) string {
 	return prDisplayTextMode(text, false, configuredTrailers...)
 }
@@ -82,7 +77,9 @@ func prDisplayTextMode(text string, notice bool, configuredTrailers ...string) s
 				lines[start] = lines[start][:cut] + filterRecordedPayload(lines[start][cut:], notice, true, configuredTrailers...)
 			}
 		}
-		kept = append(kept, lines[start:end]...)
+		for _, line := range lines[start:end] {
+			kept = append(kept, renderInlineCoAuthorKeys(line, notice, configuredTrailers...))
+		}
 		start = end
 	}
 	return strings.Join(kept, "\n")
@@ -212,8 +209,14 @@ func filterRecordedPayload(line string, notice, fragment bool, configuredTrailer
 		}
 		literal := string(out[start:end])
 		var value string
-		if err := json.Unmarshal([]byte(literal), &value); err == nil && !(fragment && bareQuotedMention(out, start, end, value, configuredTrailers)) {
-			if filtered := prDisplayTextMode(value, notice, configuredTrailers...); filtered != value {
+		if err := json.Unmarshal([]byte(literal), &value); err == nil {
+			filtered := value
+			if !(fragment && bareQuotedMention(out, start, end, value, configuredTrailers)) {
+				filtered = prDisplayTextMode(value, notice, configuredTrailers...)
+			} else {
+				filtered = renderInlineCoAuthorKeys(value, notice, configuredTrailers...)
+			}
+			if filtered != value {
 				if encoded, err := marshalJSONString(filtered); err == nil {
 					rebuilt := make([]byte, 0, len(out))
 					rebuilt = append(rebuilt, out[:start]...)
@@ -366,12 +369,9 @@ func parsePRDisplayFindings(text string, configuredTrailers ...string) (types.Fi
 	return prDisplayFindings(raw, configuredTrailers...), nil
 }
 
-// prDisplayBody normalises a whole published PR body. The body is assembled
+// prDisplayBody filters a whole published PR body. The body is assembled
 // from several owners — the agent's narrative, the recorded evidence and the
-// generated appendix — and a preserved human co-author can reach any of them,
-// so the body is filtered as one text block: every published copy of the
-// preserved human co-author becomes a labelled field, AI attribution and the
-// exactly configured trailers are removed, and ordinary prose is left alone.
+// generated appendix — so every component must pass through prDisplayText.
 func prDisplayBody(body string, configuredTrailers ...string) string {
 	return prDisplayText(body, configuredTrailers...)
 }

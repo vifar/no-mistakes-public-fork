@@ -136,9 +136,7 @@ func updateOwnedPR(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, initia
 		return fmt.Errorf("provider cannot read PR content; author-safe template updates are unsupported")
 	}
 	// The body that is republished is the one a previous publication left
-	// behind, so the configured trailers have to be known here as well: the
-	// published copy of a preserved human co-author becomes a labelled field
-	// and the exactly configured trailers are removed from it.
+	// behind, so its publication filter needs the configured trailers as well.
 	configuredTrailers, err := configuredAttributionTrailers(sctx)
 	if err != nil {
 		return err
@@ -218,10 +216,8 @@ func rebindOwnedPRAttestation(body, head string, steps []*db.StepResult, policy 
 			rebound = true
 		}
 		if rebound {
-			// A restamp republishes the body a previous publication left
-			// behind, so the published copy of a preserved human co-author is
-			// normalised here as well: it becomes a labelled field instead of a
-			// raw trailer line.
+			// A restamp republishes an existing body, so it must apply the
+			// shared display rules too.
 			updated = prDisplayBody(updated, configuredTrailers...)
 			if len(updated) > maxPullRequestBodyBytes {
 				return "", false, fmt.Errorf("restamped PR body exceeds the publication budget")
@@ -250,10 +246,8 @@ func rebindOwnedPRAttestation(body, head string, steps []*db.StepResult, policy 
 	// the whole body is filtered below.
 	appendix = prDisplayBody(appendix, configuredTrailers...)
 	appendix = safepath.RedactText(appendix)
-	// The body that is restamped is the one a previous publication left behind,
-	// so it is normalised as one text block before the integrity guard is
-	// stamped: a preserved human co-author is published as a labelled field and
-	// an already labelled AI value is removed.
+	// Apply the shared display rules to preserved author text before stamping
+	// the integrity guard, just as for the generated appendix above.
 	parts.before = prDisplayBody(parts.before, configuredTrailers...)
 	parts.after = prDisplayBody(parts.after, configuredTrailers...)
 	updated := parts.before + wrapPRAppendix(appendix) + parts.after

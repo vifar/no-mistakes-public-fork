@@ -9,12 +9,14 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -1717,12 +1719,189 @@ func escapePipelineFoldMarkers(s string) string {
 
 // renderCoAuthorAsLabelledField delegates to the shared publication filter in
 // pr_coauthor_presentation.go. Raw PR-body scanners treat co-author trailers as
-// attribution even inside code fences, so preserved human entries need a
-// labelled key while their names and addresses remain visible as evidence.
-// prDisplayNoticeText owns AI neutralization and human presentation; a sentence
-// that merely names the field stays the sentence it was.
+// attribution even inside code fences. prDisplayNoticeText applies the shared
+// display rules, including their human-prose preservation exceptions.
 func renderCoAuthorAsLabelledField(s string) string {
 	return prDisplayNoticeText(s)
+}
+
+// publishedCoAuthorKey matches the co-author key wherever it sits in a line.
+var publishedCoAuthorKey = regexp.MustCompile(`(?i)Co-Authored-By`)
+var publishedCoAuthorSeparator = regexp.MustCompile(`(?i)^(?:[*_~]|</code>)*[ \t]*:[ \t]*`)
+var publishedInlineOpening = regexp.MustCompile(`(?:[*_~]|<code>)+$`)
+var publishedHTMLEntity = regexp.MustCompile(`&(?:#[xX][0-9a-fA-F]+;?|#[0-9]+;?|[A-Za-z][A-Za-z0-9]*;?)`)
+
+// renderInlineCoAuthorKeys renders a co-author key inside a line when the rest
+// of the line is a complete identity (a name and an address), so the line ends
+// in a co-author claim. A key that only names the field, and a key quoted in an
+// inline code span, stay as they are: neither is a claim, and the code span is
+// evidence the body preserves byte for byte.
+func renderInlineCoAuthorKeys(s string, notice bool, configuredTrailers ...string) string {
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		spans := inlineCodeSpans(line)
+		matches := publishedCoAuthorKey.FindAllStringIndex(line, -1)
+		for k := len(matches) - 1; k >= 0; k-- {
+			start, keyEnd := matches[k][0], matches[k][1]
+			separator := publishedCoAuthorSeparator.FindString(html.UnescapeString(line[keyEnd:]))
+			if separator == "" {
+				continue
+			}
+			width := rawHTMLPrefixEnd(line[keyEnd:], len(separator))
+			if width < 0 {
+				continue
+			}
+			end := keyEnd + width
+			inCode := false
+			for _, span := range spans {
+				if start >= span[0] && start < span[1] {
+					inCode = true
+					break
+				}
+			}
+			if inCode {
+				continue
+			}
+			prefix, value := html.UnescapeString(line[:start]), html.UnescapeString(line[end:])
+			if strings.HasSuffix(prefix, `"`) && strings.HasPrefix(value, `"`) ||
+				strings.HasSuffix(prefix, "'") && strings.HasPrefix(value, "'") ||
+				strings.HasSuffix(prefix, "“") && strings.HasPrefix(value, "”") ||
+				strings.HasSuffix(prefix, "‘") && strings.HasPrefix(value, "’") {
+				continue
+			}
+			opening := publishedInlineOpening.FindString(prefix)
+			closing := ""
+			for wrappers := opening; wrappers != ""; {
+				wrapper, width := wrappers[:1], 1
+				if strings.HasPrefix(wrappers, "<code>") {
+					wrapper, width = "</code>", len("<code>")
+				}
+				closing = wrapper + closing
+				wrappers = wrappers[width:]
+			}
+			identity := value
+			if strings.TrimSpace(separator) == ":" {
+				identity = strings.TrimSpace(strings.TrimPrefix(identity, closing))
+			}
+			identity = strings.TrimRight(identity, " \t\r.,;:!?\"')]}”’")
+			for wrappers := opening; wrappers != ""; {
+				wrapper, width := wrappers[:1], 1
+				if strings.HasPrefix(wrappers, "<code>") {
+					wrapper, width = "</code>", len("<code>")
+				}
+				if !strings.HasSuffix(identity, wrapper) {
+					break
+				}
+				identity = strings.TrimRight(strings.TrimSuffix(identity, wrapper), " \t\r.,;:!?\"')]}”’")
+				wrappers = wrappers[width:]
+			}
+			_, unfolded, _, ai := publishedAttributionEntry([]string{"Co-Authored-By: " + identity}, 0, configuredTrailers)
+			formattedValue := strings.TrimSpace(value)
+			if ai {
+				_, identity, _ = strings.Cut(unfolded, ":")
+				identity = strings.TrimSpace(identity)
+			} else if opening != "" || strings.ContainsAny(separator, "*_~<>") || strings.HasPrefix(formattedValue, "<code>") || strings.TrimLeft(formattedValue, "*_~") != formattedValue {
+				continue
+			}
+			name, _, complete := strings.Cut(strings.TrimSpace(identity), "<")
+			name = strings.TrimSpace(name)
+			if !complete || strings.Count(identity, "<") != 1 || strings.Count(identity, ">") != 1 ||
+				!ai && !strings.HasPrefix(name, `"`) && strings.ContainsAny(name, ";,") {
+				continue
+			}
+			address, err := git.ParseAttributionAddress(identity)
+			if err != nil || address.Name == "" || !strings.HasSuffix(identity, ">") {
+				continue
+			}
+			if ai {
+				mailbox := identity[strings.IndexByte(identity, '<'):]
+				mailboxStart := strings.LastIndex(value, mailbox)
+				if mailboxStart < 0 {
+					continue
+				}
+				cut := rawHTMLPrefixEnd(line[end:], mailboxStart+len(mailbox))
+				if cut < 0 {
+					continue
+				}
+				replacement := ""
+				if notice {
+					replacement = prAIAttributionNotice
+				}
+				line = line[:start] + replacement + line[end+cut:]
+			} else {
+				line = line[:start] + presentHumanCoauthor(line[start:])
+			}
+		}
+		lines[i] = line
+	}
+	return strings.Join(lines, "\n")
+}
+
+func rawHTMLPrefixEnd(raw string, decodedEnd int) int {
+	rawOffset, decodedOffset := 0, 0
+	for _, entity := range publishedHTMLEntity.FindAllStringIndex(raw, -1) {
+		plainLen := entity[0] - rawOffset
+		if decodedEnd <= decodedOffset+plainLen {
+			return rawOffset + decodedEnd - decodedOffset
+		}
+		decodedOffset += plainLen + len(html.UnescapeString(raw[entity[0]:entity[1]]))
+		rawOffset = entity[1]
+		if decodedEnd == decodedOffset {
+			return rawOffset
+		}
+		if decodedEnd < decodedOffset {
+			return -1
+		}
+	}
+	if decodedEnd-decodedOffset > len(raw)-rawOffset {
+		return -1
+	}
+	return rawOffset + decodedEnd - decodedOffset
+}
+
+func inlineCodeSpans(text string) [][2]int {
+	trimmed := strings.TrimLeft(text, " ")
+	if len(text)-len(trimmed) <= 3 && (strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~")) {
+		width := 3
+		for width < len(trimmed) && trimmed[width] == trimmed[0] {
+			width++
+		}
+		if trimmed[0] == '~' || !strings.Contains(trimmed[width:], "`") {
+			return nil
+		}
+	}
+	var spans [][2]int
+	for i := 0; i < len(text); {
+		if text[i] == '\\' && i+1 < len(text) {
+			i += 2
+			continue
+		}
+		if text[i] != '`' {
+			i++
+			continue
+		}
+		start := i
+		for i < len(text) && text[i] == '`' {
+			i++
+		}
+		width := i - start
+		for j := i; j < len(text); {
+			if text[j] != '`' {
+				j++
+				continue
+			}
+			closeStart := j
+			for j < len(text) && text[j] == '`' {
+				j++
+			}
+			if j-closeStart == width {
+				spans = append(spans, [2]int{start, j})
+				i = j
+				break
+			}
+		}
+	}
+	return spans
 }
 
 // neutralizeAttestationMarkers breaks every attestation comment prefix in

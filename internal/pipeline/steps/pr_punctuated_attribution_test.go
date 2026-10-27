@@ -133,8 +133,14 @@ func TestPRWrappedCoauthorTerminalPunctuation(t *testing.T) {
 			}
 		}
 	}
+	const prose = "Ordinary prose mentioning **Co-Authored-By: Codex <ai@example.com>**."
+	if got := prDisplayBody(prose); got != "Ordinary prose mentioning ****." {
+		t.Errorf("inline AI claim was not removed with surrounding bytes retained: %q", got)
+	}
+	if got := prDisplayNoticeText(prose); got != "Ordinary prose mentioning **"+prAIAttributionNotice+"**." {
+		t.Errorf("inline AI claim was not neutralized with surrounding bytes retained: %q", got)
+	}
 	for _, text := range []string{
-		"Ordinary prose mentioning **Co-Authored-By: Codex <ai@example.com>**.",
 		"[Co-Authored-By: Codex <ai@example.com>](https://example.com).",
 		"See [Codex](https://example.com).",
 	} {
