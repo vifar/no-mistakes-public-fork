@@ -572,21 +572,30 @@ Risk assessment (after listing all findings):
 		// the same missing evidence as an empty or partial one (VISION.md R4:
 		// every review pass covers the complete change).
 		//
-		// Before parking, one focused completion turn reviews exactly the
-		// uncovered files and merges its record into this round's. Self-reported
-		// coverage is lossy in exactly this way on real multi-file diffs (a
-		// 15-file branch saw three consecutive zero-finding rounds each omit a
-		// different file), and the only non-waiver path used to be a full
-		// re-review that re-rolled the same dice after a fixer round with
-		// nothing to fix. The completion turn keeps the operator out of that
-		// loop; whatever is still uncovered after it parks with the explicit
-		// remainder named, so a partial or fabricated record never approves.
-		completed, err := s.completeCoverageGaps(sctx, turnPrompt, sessionRole, opts, findings, reviewable, askDir)
-		if err != nil {
-			return nil, err
+		// Keep coverage earned within this round: each focused pass reviews
+		// only the remaining files. A fresh full review round would discard
+		// that progress and can keep reshuffling the unverified set forever.
+		// Bound the calls and stop on no progress or a blocking finding; the
+		// strict union check still refuses partial or fabricated coverage.
+		for pass := 1; pass <= reviewCoverageMaxPasses && !sctx.EvalReplay; pass++ {
+			missingBefore := len(uncoveredReviewablePaths(findings.ReviewedPaths, reviewable))
+			completed, err := s.completeCoverageGaps(sctx, turnPrompt, sessionRole, opts, findings, reviewable, askDir)
+			if err != nil {
+				return nil, err
+			}
+			findings = completed
+			needsApproval = hasBlockingReviewFindings(findings.Items)
+			if needsApproval || reviewedPathsCoverReviewable(findings.ReviewedPaths, reviewable) {
+				break
+			}
+			if len(uncoveredReviewablePaths(findings.ReviewedPaths, reviewable)) >= missingBefore {
+				sctx.Log("focused coverage pass made no progress; parking on the incomplete coverage record")
+				break
+			}
+			if pass == reviewCoverageMaxPasses {
+				sctx.Log(fmt.Sprintf("reached the limit of %d focused coverage passes; parking on the incomplete coverage record", reviewCoverageMaxPasses))
+			}
 		}
-		findings = completed
-		needsApproval = hasBlockingReviewFindings(findings.Items)
 		if !needsApproval && !reviewedPathsCoverReviewable(findings.ReviewedPaths, reviewable) {
 			sctx.Log(uncoveredReviewMessage(findings.ReviewedPaths, reviewable))
 			needsApproval = true
@@ -609,6 +618,9 @@ Risk assessment (after listing all findings):
 // reviewAnalyzerMaxAttempts bounds the review turns one Execute spends on
 // output that fails validation, including the first.
 const reviewAnalyzerMaxAttempts = 3
+
+// reviewCoverageMaxPasses bounds focused completion turns within one round.
+const reviewCoverageMaxPasses = 5
 
 // coveragePathLine renders one branch-controlled path as a single prompt line.
 // A git path may itself contain an embedded newline (changedPathList preserves
@@ -708,11 +720,10 @@ func (s *ReviewStep) completeCoverageGaps(sctx *pipeline.StepContext, basePrompt
 		// reviewed_paths entries, which more review cannot cure.
 		return findings, nil
 	}
-	if hasInvalidReviewedPath(findings.ReviewedPaths) {
-		// The record already carries an entry that is not a path at all. That
-		// entry makes reviewedPathsCoverReviewable fail no matter what the
-		// completion turn covers, so the round can only park; running the turn
-		// would spend an agent call on an uncurable record.
+	if hasInvalidReviewedPath(findings.ReviewedPaths) || len(uncoveredReviewablePaths(reviewable, findings.ReviewedPaths)) > 0 {
+		// Checking the reported paths against the trusted set also catches
+		// out-of-scope entries. Invalid or out-of-scope evidence cannot be
+		// cured by another completion turn, so do not spend another call.
 		return findings, nil
 	}
 	sctx.Log(fmt.Sprintf("review coverage incomplete; running one focused review pass over %d unverified file(s): %s", len(missing), strings.Join(missing, ", ")))
