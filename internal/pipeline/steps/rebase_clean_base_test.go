@@ -173,3 +173,54 @@ func TestRebaseStep_SourceBranchCommitsStillIntegrateWhenBaseIsClean(t *testing.
 		t.Fatal("the clean moved base was integrated")
 	}
 }
+
+// A change that already landed on the base through a squash merge leaves the
+// head's commits outside the base, so merge-base..HEAD stays nonempty. The
+// head is kept (issue #237), but its effective proposal is empty: merging it
+// into the target reproduces the target tree exactly, so the run must end as
+// the old rebase-then-empty-diff path did instead of reviewing and testing a
+// change that already shipped. A partially landed change still validates.
+func TestRebaseStep_AlreadySquashMergedHeadSkipsRemaining(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		extraFile bool
+		wantSkip  bool
+	}{
+		{name: "fully landed", wantSkip: true},
+		{name: "partly landed", extraFile: true, wantSkip: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newCleanBaseFixture(t, "feature.txt", "main.txt")
+			if tc.extraFile {
+				writeFixtureFile(t, f.dir, "extra.txt", "not on main\n")
+				gitCmd(t, f.dir, "add", "-A")
+				gitCmd(t, f.dir, "commit", "-m", "extra feature change")
+				f.headSHA = gitCmd(t, f.dir, "rev-parse", "HEAD")
+				gitCmd(t, f.dir, "push", "origin", "feature")
+			}
+			// Squash-merge the original feature change onto main.
+			gitCmd(t, f.dir, "checkout", "main")
+			writeFixtureFile(t, f.dir, "feature.txt", "feature change\n")
+			gitCmd(t, f.dir, "add", "-A")
+			gitCmd(t, f.dir, "commit", "-m", "feature change (squash)")
+			gitCmd(t, f.dir, "push", "origin", "main")
+			gitCmd(t, f.dir, "checkout", "feature")
+
+			sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, f.dir, f.baseSHA, f.headSHA, config.Commands{})
+			sctx.Run.Branch = "refs/heads/feature"
+			sctx.Repo.UpstreamURL = f.upstream
+			outcome, err := (&RebaseStep{}).Execute(sctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if outcome.SkipRemaining != tc.wantSkip || outcome.NeedsApproval {
+				t.Fatalf("outcome = %+v, want SkipRemaining=%t", outcome, tc.wantSkip)
+			}
+			if head := gitCmd(t, f.dir, "rev-parse", "HEAD"); head != f.headSHA {
+				t.Fatalf("HEAD = %s, want the submitted head %s kept", head, f.headSHA)
+			}
+		})
+	}
+}

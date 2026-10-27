@@ -986,7 +986,37 @@ func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext, targetBranch
 		return &pipeline.StepOutcome{SkipRemaining: true}, nil
 	}
 
+	// A kept clean head whose change already landed on the target (a squash
+	// merge or cherry-pick) still has commits outside the target, so the
+	// diff above is not empty. Its effective proposal is: merging it into the
+	// target reproduces the target tree exactly. Rebasing used to drop those
+	// commits and end here; keeping the head must not turn that into a full
+	// review and test of a change that already shipped (issue #237).
+	if !pinned && keepsCleanHeads(sctx) {
+		if landed, landedErr := proposalAlreadyOnTarget(ctx, sctx.WorkDir, "refs/remotes/origin/"+targetBranch, headSHA); landedErr == nil && landed {
+			sctx.Log(fmt.Sprintf("head %s is already contained in %s; merging it changes nothing, skipping remaining steps", shortSHA(headSHA), targetBranch))
+			return &pipeline.StepOutcome{SkipRemaining: true}, nil
+		}
+	}
+
 	return &pipeline.StepOutcome{}, nil
+}
+
+// proposalAlreadyOnTarget reports whether merging head into target is a clean
+// merge whose result tree is exactly target's tree, i.e. head proposes no
+// change the target does not already carry. Any error, a conflict, or a
+// different tree reports false, so the run validates as usual.
+func proposalAlreadyOnTarget(ctx context.Context, dir, target, head string) (bool, error) {
+	targetTree, err := git.Run(ctx, dir, "rev-parse", "--verify", target+"^{tree}")
+	if err != nil {
+		return false, err
+	}
+	merged, err := git.Run(ctx, dir, "merge-tree", "--write-tree", "--no-messages", target, head)
+	if err != nil {
+		return false, err
+	}
+	resultTree, _, _ := strings.Cut(strings.TrimSpace(merged), "\n")
+	return resultTree != "" && resultTree == strings.TrimSpace(targetTree), nil
 }
 
 func shortSHA(sha string) string {
