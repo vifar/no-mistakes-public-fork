@@ -6,6 +6,8 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/git"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 // cleanBaseFixture builds origin/main and a pushed feature branch that has
@@ -267,5 +269,83 @@ func TestUpdateHeadSHA_PinnedRewindEndsAlreadyLandedProposal(t *testing.T) {
 				t.Fatalf("outcome = %+v, want SkipRemaining=%t", outcome, tc.wantSkip)
 			}
 		})
+	}
+}
+
+func TestRebaseStep_ParkedConflictResumesOnSquashLandedTarget(t *testing.T) {
+	for _, mode := range []string{"normal", "fix"} {
+		for _, partlyLanded := range []bool{false, true} {
+			name := mode + "/fully landed"
+			if partlyLanded {
+				name = mode + "/partly landed"
+			}
+			t.Run(name, func(t *testing.T) {
+				f := newCleanBaseFixture(t, "shared.txt", "shared.txt")
+				if partlyLanded {
+					writeFixtureFile(t, f.dir, "extra.txt", "still proposed\n")
+					gitCmd(t, f.dir, "add", "extra.txt")
+					gitCmd(t, f.dir, "commit", "-m", "remaining proposal")
+					f.headSHA = gitCmd(t, f.dir, "rev-parse", "HEAD")
+					gitCmd(t, f.dir, "push", "origin", "feature")
+				}
+				gitCmd(t, f.dir, "push", "--force", "origin", f.baseSHA+":main")
+				gitCmd(t, f.dir, "update-ref", "refs/remotes/origin/main", f.baseSHA)
+				c := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, f.dir, f.baseSHA, f.headSHA, config.Commands{})
+				c.Repo.UpstreamURL = f.upstream
+				c.Config.Rebase.MaxTargetAdvanceRewinds = 3
+				selected := pipeline.PRTargetSelection{TargetBranch: "main"}
+				if _, err := guardPRContextWithSelection(c, types.StepRebase, selected, false); err != nil {
+					t.Fatal(err)
+				}
+				gitCmd(t, f.dir, "push", "origin", "main")
+				decision, err := guardPRContextWithSelection(c, types.StepTest, selected, false)
+				if err != nil || decision.RestartFrom != types.StepRebase {
+					t.Fatalf("conflicting target must create a rewind: %+v, %v", decision, err)
+				}
+				step := &RebaseStep{}
+				parked, err := step.Execute(c)
+				if err != nil || parked == nil || !parked.NeedsApproval || !parked.AutoFixable {
+					t.Fatalf("T1 must park at the conflict gate: %+v, %v", parked, err)
+				}
+				pending, err := c.DB.GetPendingTargetRewind(c.Run.ID)
+				if err != nil || pending == nil || pending.TargetSHA != f.mainTip || pending.LocalHeadSHA != f.headSHA {
+					t.Fatalf("park must retain T1 and H: %+v, %v", pending, err)
+				}
+				gitCmd(t, f.dir, "checkout", "main")
+				writeFixtureFile(t, f.dir, "shared.txt", "feature change\n")
+				gitCmd(t, f.dir, "add", "shared.txt")
+				gitCmd(t, f.dir, "commit", "-m", "squash land feature change")
+				target := gitCmd(t, f.dir, "rev-parse", "HEAD")
+				gitCmd(t, f.dir, "push", "origin", "main")
+				gitCmd(t, f.dir, "checkout", "feature")
+				c.Fixing = true
+				c.PreviousFindings = parked.Findings
+				_, cleanup, err := checkedRewindTargets(c, rebaseTargets("feature", "main"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := cleanup(); err != nil {
+					t.Fatal(err)
+				}
+				pending, err = c.DB.GetPendingTargetRewind(c.Run.ID)
+				if err != nil || pending == nil || pending.TargetSHA != target || pending.LocalHeadSHA != f.headSHA || c.Fixing {
+					t.Fatalf("refresh must bind T2 and H and clear the old fix selection: %+v, fixing=%t, %v", pending, c.Fixing, err)
+				}
+				c.Fixing = mode == "fix"
+				outcome, err := step.Execute(c)
+				if err != nil || outcome == nil || outcome.NeedsApproval || outcome.SkipRemaining != !partlyLanded {
+					t.Fatalf("resumed proposal must skip only when fully landed: %+v, %v", outcome, err)
+				}
+				if c.Fixing != (mode == "fix") {
+					t.Fatal("resume did not exercise the requested completion caller")
+				}
+				if mode == "fix" && outcome.FixSummary != NoChangesAppliedSummary {
+					t.Fatalf("clean fix-mode completion = %q", outcome.FixSummary)
+				}
+				if head := gitCmd(t, f.dir, "rev-parse", "HEAD"); head != f.headSHA || c.Run.HeadSHA != f.headSHA {
+					t.Fatalf("resume rewrote kept H: live=%s recorded=%s want=%s", head, c.Run.HeadSHA, f.headSHA)
+				}
+			})
+		}
 	}
 }
