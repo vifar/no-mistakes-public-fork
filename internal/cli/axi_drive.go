@@ -179,7 +179,9 @@ func newAxiRunCmd() *cobra.Command {
 			"whitespace when storing intent. Prefer file/stdin to interpolating prose\n" +
 			"into shell commands: the caller's shell can expand\n" +
 			"backticks and dollars in --intent TEXT before no-mistakes receives it.\n" +
-			"Ordinary reattachment needs no input and keeps the existing run's intent.\n\n" +
+			"Ordinary reattachment needs no input and keeps the existing run's intent.\n" +
+			"A run a plain git push created has no owner or intent: reattaching takes\n" +
+			"yours while it is still queued, and refuses once it has started without them.\n\n" +
 			"--wait bounds this hold (default 8m) so an agent harness with a 10-minute\n" +
 			"tool cap gets a structured return instead of an unbounded hang. Elapsed wait\n" +
 			"is not a failed run: inspect with axi status and reattach. A slow live daemon\n" +
@@ -416,6 +418,9 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 			return emitError(cmd, 1, fmt.Sprintf("get active run: %v", err))
 		}
 		if active != nil {
+			if planRequested {
+				return emitError(cmd, 2, "--verification-plan is accepted only when starting a new run; omit it to reattach")
+			}
 			if !active.Shipping.Matches(shipping) {
 				return emitError(cmd, 2, "active run has a different shipping pin")
 			}
@@ -432,6 +437,26 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 			if err := conflictingActiveRunOmitIntent(active, omitIntent); err != nil {
 				return emitError(cmd, 2, err.Error(),
 					"Omit --no-publish-intent to reattach, or abort the active run before starting a new one")
+			}
+			// A push-created run has no owner and no intent; reattaching must
+			// not drop the ones this caller launched with (issue #190).
+			if err := adoptReattachedRunLaunch(driveCtx, env.client, cmd.ErrOrStderr(), active.ID, types.RunOwnerFromContext(ctx), intent); err != nil {
+				if isAxiWaitElapsed(ctx, driveCtx, err) {
+					return emitAxiWaitElapsed(cmd, wait, "no-mistakes axi run")
+				}
+				var refusal *launchAdoptionRefusedError
+				if errors.As(err, &refusal) {
+					if refusal.Code == ipc.AdoptRunLaunchRefusedLaunchBound {
+						return emitError(cmd, 2, err.Error(), "Reattach with the original launch nonce and launch values, or omit --owner/--intent to observe the run")
+					}
+					if refusal.Code == ipc.AdoptRunLaunchRefusedOwnerConflict {
+						return emitError(cmd, 2, err.Error(), "Drive the run as its owner, or inspect it with `no-mistakes axi status --run "+active.ID+"`")
+					}
+					return emitError(cmd, 2, err.Error(),
+						"The run was most likely created by a plain `git push` to the gate, which records no owner or intent",
+						"Abort it with `no-mistakes axi abort --run "+active.ID+" --owner <you> --reason <why>`, then rerun `no-mistakes axi run --owner ... --intent-file ...` without pushing first")
+				}
+				return emitError(cmd, 1, err.Error())
 			}
 			runID = active.ID
 		}
@@ -678,6 +703,56 @@ func forwardClosingIssueRefsToActiveRun(client closingIssueRefsUpdateClient, run
 			return errClosingIssueRefsPRBodyComposed
 		}
 		return errors.New("forward closing issue references to active run: daemon rejected update")
+	}
+	return nil
+}
+
+// launchAdoptionRefusedError reports that a reattached run could not take the
+// owner or intent the caller launched with; Code is the daemon's refusal code.
+type launchAdoptionRefusedError struct {
+	Code    string
+	Message string
+}
+
+func (e *launchAdoptionRefusedError) Error() string {
+	return fmt.Sprintf("refusing to reattach (%s): %s", e.Code, e.Message)
+}
+
+// adoptReattachedRunLaunch hands a reattached run the caller's owner and intent
+// (issue #190). A run started by a push has neither, and reattaching used to
+// keep both empty without a word. The daemon applies them while the run is
+// still queued, keeps any it already has, and refuses when the run has started
+// without them or is owned by someone else. An older daemon without the
+// method cannot apply them, so the reattach fails closed rather than dropping
+// them.
+func adoptReattachedRunLaunch(ctx context.Context, client interface {
+	CallWithContext(context.Context, string, interface{}, interface{}, time.Duration) error
+}, notices io.Writer, runID, owner, intent string) error {
+	owner = strings.TrimSpace(owner)
+	intent = strings.TrimSpace(intent)
+	if owner == "" && intent == "" {
+		return nil
+	}
+	var result ipc.AdoptRunLaunchResult
+	if err := client.CallWithContext(ctx, ipc.MethodAdoptRunLaunch, &ipc.AdoptRunLaunchParams{RunID: runID, Owner: owner, Intent: intent}, &result, 0); err != nil {
+		var rpcErr *ipc.RPCError
+		if errors.As(err, &rpcErr) && rpcErr.Code == ipc.ErrMethodNotFound {
+			return fmt.Errorf("the running daemon is too old to apply --owner/--intent to reattached run %s; restart it with the current binary, or omit --owner/--intent to reattach", runID)
+		}
+		return fmt.Errorf("apply owner/intent to reattached run %s: %w", runID, err)
+	}
+	if result.Refused != "" {
+		return &launchAdoptionRefusedError{Code: result.Refused, Message: result.Message}
+	}
+	var applied []string
+	if result.OwnerApplied {
+		applied = append(applied, "owner "+owner)
+	}
+	if result.IntentApplied {
+		applied = append(applied, "intent")
+	}
+	if len(applied) > 0 {
+		fmt.Fprintf(notices, "reattached to queued run %s and applied its missing %s\n", runID, strings.Join(applied, " and "))
 	}
 	return nil
 }

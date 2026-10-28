@@ -110,7 +110,7 @@ func TestNoCIReadinessJourney(t *testing.T) {
 				t.Errorf("ordinary axi status lost readiness/reason:\n%s", out)
 			}
 			if ready {
-				out, err := j.h.Run("axi", "run", "--intent", "Validate issue 122 no-CI readiness", "--wait", "5s")
+				out, err := j.h.Run("axi", "run", "--wait", "5s")
 				t.Logf("agent-facing axi output:\n%s", out)
 				if err != nil || !strings.Contains(out, "outcome: checks-passed") {
 					t.Errorf("no terminal agent-facing readiness outcome: %v\n%s", err, out)

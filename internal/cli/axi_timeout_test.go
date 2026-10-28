@@ -423,6 +423,8 @@ func TestNoMistakesBinary_WaitAndSlowDaemon(t *testing.T) {
 }
 
 type axiTimeoutOpts struct {
+	adopt func(context.Context, json.RawMessage) (interface{}, error)
+
 	responded *atomic.Bool
 	subscribe ipc.StreamHandlerFunc
 	// answer, when set, serves the daemon's answer-review-question call.
@@ -548,6 +550,13 @@ func newAxiTimeoutFixture(t *testing.T, opts axiTimeoutOpts) *axiTimeoutFixture 
 	srv.Handle(ipc.MethodGateContext, func(context.Context, json.RawMessage) (interface{}, error) {
 		return &ipc.GateContextResult{Nested: false}, nil
 	})
+	if opts.adopt != nil {
+		srv.Handle(ipc.MethodAdoptRunLaunch, opts.adopt)
+	} else {
+		srv.Handle(ipc.MethodAdoptRunLaunch, func(context.Context, json.RawMessage) (interface{}, error) {
+			return &ipc.AdoptRunLaunchResult{}, nil
+		})
+	}
 	if !opts.withoutAcceptedGaps {
 		srv.Handle(ipc.MethodProbeAcceptedGaps, func(context.Context, json.RawMessage) (interface{}, error) {
 			return &ipc.ProbeAcceptedGapsResult{OK: true}, nil
@@ -733,4 +742,26 @@ func execNoMistakesErr(t *testing.T, bin string, args ...string) (string, error)
 	cmd.Stderr = &buf
 	err := cmd.Run()
 	return buf.String(), err
+}
+
+func TestAxiRunAdoptionHonorsWaitBudget(t *testing.T) {
+	var calls atomic.Int32
+	fx := newAxiTimeoutFixture(t, axiTimeoutOpts{adopt: func(ctx context.Context, _ json.RawMessage) (interface{}, error) {
+		calls.Add(1)
+		if err := sleepOrDone(ctx, 2*time.Second); err != nil {
+			return nil, err
+		}
+		return &ipc.AdoptRunLaunchResult{}, nil
+	}})
+	fx.setGetRun(func(context.Context, int) (*ipc.RunInfo, error) { return fx.completed(), nil })
+	started := time.Now()
+	out, err := executeCmd("axi", "run", "--intent", "original goal", "--wait", "250ms")
+	elapsed := time.Since(started)
+	assertWaitElapsed(t, err, out, "250ms")
+	if calls.Load() != 1 {
+		t.Fatalf("adoption calls=%d, want 1", calls.Load())
+	}
+	if elapsed > time.Second {
+		t.Fatalf("adoption exceeded wait budget: %s", elapsed)
+	}
 }

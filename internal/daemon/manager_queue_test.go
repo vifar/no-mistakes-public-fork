@@ -37,6 +37,8 @@ type schedStep struct {
 	started   []string
 	cancelled []string
 	gates     map[string]chan struct{}
+	// launch records the owner and intent each run carried when its step ran.
+	launch map[string][2]string
 }
 
 func TestQueuedSetupAbortCancelsStalledFetchAndReleasesSlot(t *testing.T) {
@@ -140,6 +142,14 @@ func (s *schedStep) startedIDs() []string {
 func (s *schedStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	s.mu.Lock()
 	s.started = append(s.started, sctx.Run.ID)
+	if s.launch == nil {
+		s.launch = map[string][2]string{}
+	}
+	intent := ""
+	if sctx.Run.Intent != nil {
+		intent = *sctx.Run.Intent
+	}
+	s.launch[sctx.Run.ID] = [2]string{sctx.Run.Owner(), intent}
 	s.mu.Unlock()
 	branch := sctx.Run.Branch
 	if strings.HasPrefix(branch, "park") {
