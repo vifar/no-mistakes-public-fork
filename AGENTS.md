@@ -66,6 +66,16 @@ Safest local verification sequence after non-trivial changes:
 - `no-mistakes update` reads only `channels.json` from the release-asset CDN, never `api.github.com`. This fork has no release or channel-publishing workflow, and every workflow job runs only on the self-hosted king-server runner (`TestEveryWorkflowJobRunsOnTheKingServer`); never reintroduce a hosted runner. Owner: `release-signing` skill, `docs/src/content/docs/guides/fork-ci.md`.
 - The retired `jev` config key stays a parse-only tombstone; do not repurpose it.
 
+## Coding standards
+
+Owner rules (2026-10-27) for all new code. The review step flags violations (`internal/pipeline/steps/review.go`, "Coding standards").
+
+- Validate unknown values once, at the boundary that owns them (CLI flags, config, forge or agent output, database reads, files, environment), and pass typed values inward. No repeated nil, type or field-presence checks deeper in.
+- Do not re-check what a type, constructor or schema already guarantees.
+- No preemptive single-use helpers: inline at the call site unless the helper is reused, hides a genuinely complex boundary, or its name makes the caller clearer.
+- Handle errors only at real IO boundaries (network, forge, file, database, process), and there handle them fully or fail loudly and closed. Never swallow an error: no discarded `err`, no log-and-continue on startup or on a path that publishes or merges.
+- Existing code: clean up only in files you are already changing, never as unrelated churn.
+
 ## Test and CI conventions
 
 - Pipeline-step tests put the non-race `internal/pipeline/fakecli` helper on PATH as `gh`/`glab`/`git`, and use `internal/testgit.RealGit` for the real binary. Never re-exec the race-instrumented test binary as those names.

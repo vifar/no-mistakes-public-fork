@@ -359,6 +359,12 @@ Previous review findings to address:
 	// fixer's removal rule has something to act on. It stays ask-user because
 	// whether extra surface is wanted is the author's call; the section
 	// deliberately adds no schema field or second reviewer.
+	//
+	// The Coding standards section carries the owner's coding rules
+	// (2026-10-27): a swallowed error caused a dev outage, so it is an error;
+	// repeated defensive checks, preemptive single-use helpers and unneeded
+	// try/catch are info-level cleanups. They are exempt from the
+	// failing-sequence threshold because the violation is the changed line.
 	prompt := fmt.Sprintf(
 		`Review the code changes and return structured findings with a risk assessment.
 
@@ -420,6 +426,12 @@ Simplification (a dedicated pass over what the change introduced, in addition to
 - For each component that is not strictly required to satisfy that intent, report a finding with severity "warning" and action "ask-user". Name the component, state that no intent requirement needs it or which requirement it exceeds, and recommend removing it as the remedy. Do not recommend hardening, validating, or documenting a component the intent does not require.
 - When a defect you reported above lives inside such a component, say so in that finding and name removal of the component as the smallest honest remedy, instead of prescribing a repair that keeps the component and hardens it.
 - Report each unrequired component once. When a component is required but a strictly narrower form satisfies the intent (for example an exact match where the change accepts several spellings), name the narrower form.
+
+Coding standards (check only code the change adds or modifies; these findings need no failing sequence, the changed line is the evidence):
+- A swallowed error: an empty catch, a catch or error branch that logs and continues on startup or on an order or trading path, or a fallback that returns fake success. Report it with severity "error" and action "auto-fix"; the remedy is to handle the error fully or fail loudly and closed.
+- A repeated defensive check: a type, null, or property-existence check on a value that was already validated at its owning boundary (API input, provider response, config, database, file, or environment), or that a schema, constructor, or internal type already guarantees. Report it with severity "info" and action "auto-fix"; the remedy is to validate once at the boundary and pass the typed value inward.
+- A preemptive single-use helper: a new helper called from one place that hides no complex boundary and whose name does not make the caller clearer. Report it with severity "info" and action "auto-fix"; the remedy is to inline it at the call site.
+- An unneeded try/catch: error handling around code that performs no network, broker, file, database, or process IO. Report it with severity "info" and action "auto-fix"; the remedy is to remove the wrapper. A catch that swallows the error is reported as a swallowed error instead.
 
 Risk assessment (after listing all findings):
 - Assess source code, source-verifiable criteria, and enforceable external lifecycle requirements normally, while excluding findings scoped "pipeline-owned-delivery" from risk.

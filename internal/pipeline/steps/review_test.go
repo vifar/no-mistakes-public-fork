@@ -1204,6 +1204,58 @@ func TestReviewStep_DurableFixAdequacyContract(t *testing.T) {
 	}
 }
 
+// The Coding standards section pins the owner's coding rules (2026-10-27)
+// and their severities: a swallowed error blocks the merge, the other three
+// are info-level cleanups.
+func TestReviewStep_CodingStandardsSectionContract(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	findingsJSON, _ := json.Marshal(cleanReviewFindings())
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: findingsJSON}, nil
+		},
+	}
+
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	prompt := ag.calls[0].Prompt
+
+	sectionIdx := strings.Index(prompt, "\nCoding standards (check only code the change adds or modifies")
+	if sectionIdx < 0 {
+		t.Fatalf("review prompt missing the Coding standards section:\n%s", prompt)
+	}
+	if simplIdx := strings.Index(prompt, "\nSimplification (a dedicated pass"); simplIdx < 0 || simplIdx > sectionIdx {
+		t.Errorf("Coding standards section must follow the Simplification section:\n%s", prompt)
+	}
+	section := prompt[sectionIdx:]
+	riskIdx := strings.Index(section, "\nRisk assessment")
+	if riskIdx < 0 {
+		t.Fatalf("Coding standards section must precede the Risk assessment section:\n%s", prompt)
+	}
+	section = section[:riskIdx]
+
+	for _, want := range []string{
+		"these findings need no failing sequence",
+		`A swallowed error: an empty catch, a catch or error branch that logs and continues on startup or on an order or trading path, or a fallback that returns fake success. Report it with severity "error"`,
+		`A repeated defensive check:`,
+		`A preemptive single-use helper:`,
+		`An unneeded try/catch:`,
+		"A catch that swallows the error is reported as a swallowed error instead.",
+	} {
+		if !strings.Contains(section, want) {
+			t.Errorf("Coding standards section missing %q:\n%s", want, section)
+		}
+	}
+	if got := strings.Count(section, `severity "info"`); got != 3 {
+		t.Errorf("Coding standards section has %d info-severity rules, want 3:\n%s", got, section)
+	}
+}
+
 // The qualitative corpus is an executable unified-diff contract, so each
 // fixture must remain consumable by the documented git-based evaluation flow.
 func TestReviewStep_IntendedUsageFixturesApply(t *testing.T) {
