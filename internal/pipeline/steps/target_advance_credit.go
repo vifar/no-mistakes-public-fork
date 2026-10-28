@@ -135,9 +135,10 @@ func qualifiedAdvancedMergeTree(c *pipeline.StepContext, host scm.Host, receipt 
 	return tree, nil
 }
 
-// reusableRewindReview requires both an identical canonical PR patch and a
-// conflict-free three-way merge that produces exactly the integrated tree.
-// Tests and lint still run on the new head; old gate answers remain history.
+// reusableRewindReview requires an identical canonical PR patch. An unchanged
+// reviewed head needs a clean merge into the target; a rewritten head needs
+// the merge result to equal its tree. Other validation runs again, and old
+// gate answers remain history.
 func reusableRewindReview(c *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	if c.DB == nil || c.Run.Shipping != nil || c.Fixing {
 		return nil, nil

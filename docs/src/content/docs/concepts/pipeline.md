@@ -53,7 +53,7 @@ The pipeline is opinionated so that "passed the gate" has a stable meaning:
 - **Intent first** so downstream agent prompts and generated PR descriptions can include author intent supplied by the agent or inferred from transcripts.
 - **Rebase next** to check integration with fresh upstream and pushed-branch state before validation.
   The [Rebase reference](/no-mistakes/reference/pipeline-steps/#rebase) owns its approval checks for unpushed local-default work and the target-advance rewind exception.
-  If there's no diff left after the rebase, the pipeline skips the rest.
+  It also owns the empty-proposal rules for ending a run before validation.
   The first executed core step at or after Rebase fetches the comparison if no
   receipt exists yet. Skipped core steps and custom gates anchored to skipped
   steps defer that fetch; independent custom commands still run. Once a receipt

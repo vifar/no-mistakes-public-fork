@@ -1105,7 +1105,7 @@ rebase:
   integrate: always
 ```
 
-- **`on-conflict` (default)** integrates the base only when the branch head conflicts with it. Before each integration the step merges the head into the fetched base with `git merge-tree`, which touches no ref or file. A clean merge keeps the head exactly as it is: no rebase, no merge commit and no reset, including a head that is behind the base. A pull request merges from its own head, so keeping it up to date buys nothing, and every new head it would create must be reviewed, tested and pushed again. A real conflict integrates and resolves as before.
+- **`on-conflict` (default)** integrates the base only when the branch head conflicts with it. Before each integration the step merges the head into the fetched base with `git merge-tree`, which leaves refs, the index, and worktree files untouched. A clean merge keeps the head exactly as it is: no rebase, no merge commit and no reset, including a head that is behind the base. A pull request merges from its own head, so keeping it up to date buys nothing, and every new head it would create must be reviewed, tested and pushed again. A real conflict integrates and resolves as before.
 - **`always`** integrates every base that moved. This was the behavior before this setting existed. Use it when the target's protection requires a branch to be up to date before it merges.
 
 The same setting governs [target advances during validation, publication, and shipping](/no-mistakes/reference/pipeline-steps/#target-advances-before-publication), whose step reference owns the comparison and evidence rules.
