@@ -991,9 +991,18 @@ func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext, targetBranch
 	// diff above is not empty. Its effective proposal is: merging it into the
 	// target reproduces the target tree exactly. Rebasing used to drop those
 	// commits and end here; keeping the head must not turn that into a full
-	// review and test of a change that already shipped (issue #237).
-	if !pinned && keepsCleanHeads(sctx) {
-		if landed, landedErr := proposalAlreadyOnTarget(ctx, sctx.WorkDir, "refs/remotes/origin/"+targetBranch, headSHA); landedErr == nil && landed {
+	// review and test of a change that already shipped (issue #237). A pending
+	// rewind is judged against its pinned checked target, not the tracking ref,
+	// which may have moved since the target was checked.
+	if keepsCleanHeads(sctx) {
+		target := "refs/remotes/origin/" + targetBranch
+		if pinned {
+			target = checkedTarget[0]
+		}
+		landed, landedErr := proposalAlreadyOnTarget(ctx, sctx.WorkDir, target, headSHA)
+		if landedErr != nil {
+			sctx.Log(fmt.Sprintf("could not compare head %s with %s (%v); validating it as a new proposal", shortSHA(headSHA), shortSHA(target), landedErr))
+		} else if landed {
 			sctx.Log(fmt.Sprintf("head %s is already contained in %s; merging it changes nothing, skipping remaining steps", shortSHA(headSHA), targetBranch))
 			return &pipeline.StepOutcome{SkipRemaining: true}, nil
 		}

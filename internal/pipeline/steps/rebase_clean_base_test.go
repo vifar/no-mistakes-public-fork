@@ -224,3 +224,48 @@ func TestRebaseStep_AlreadySquashMergedHeadSkipsRemaining(t *testing.T) {
 		})
 	}
 }
+
+// A run parked on a conflicting target advance resumes with a pending rewind
+// pinned to the checked target. When that checked target already carries the
+// head's change (squash-merged while the run was parked), the kept head
+// proposes nothing and the run must end, judged against the pinned target
+// rather than a tracking ref that may have moved since.
+func TestUpdateHeadSHA_PinnedRewindEndsAlreadyLandedProposal(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		extraFile bool
+		wantSkip  bool
+	}{
+		{name: "fully landed", wantSkip: true},
+		{name: "partly landed", extraFile: true, wantSkip: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newCleanBaseFixture(t, "feature.txt", "main.txt")
+			if tc.extraFile {
+				writeFixtureFile(t, f.dir, "extra.txt", "not on main\n")
+				gitCmd(t, f.dir, "add", "-A")
+				gitCmd(t, f.dir, "commit", "-m", "extra feature change")
+				f.headSHA = gitCmd(t, f.dir, "rev-parse", "HEAD")
+			}
+			gitCmd(t, f.dir, "checkout", "main")
+			writeFixtureFile(t, f.dir, "feature.txt", "feature change\n")
+			gitCmd(t, f.dir, "add", "-A")
+			gitCmd(t, f.dir, "commit", "-m", "feature change (squash)")
+			checked := gitCmd(t, f.dir, "rev-parse", "HEAD")
+			gitCmd(t, f.dir, "checkout", "feature")
+			// The tracking ref no longer names the checked target.
+			gitCmd(t, f.dir, "update-ref", "refs/remotes/origin/main", f.mainTip)
+
+			sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, f.dir, f.baseSHA, f.headSHA, config.Commands{})
+			outcome, err := updateHeadSHA(sctx.Ctx, sctx, "main", checked)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if outcome.SkipRemaining != tc.wantSkip {
+				t.Fatalf("outcome = %+v, want SkipRemaining=%t", outcome, tc.wantSkip)
+			}
+		})
+	}
+}
