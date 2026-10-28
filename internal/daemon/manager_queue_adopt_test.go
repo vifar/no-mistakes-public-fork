@@ -107,3 +107,33 @@ func TestAdoptRunLaunchRefusesADifferentOwner(t *testing.T) {
 	f.waitStarted(queued)
 	f.step.release(queued)
 }
+
+// Once a queued run starts, launchQueuedRun executes a freshly loaded record
+// and the intent step may persist an inferred intent; the m.runs snapshot the
+// queue held keeps its original empty values. Adoption must decide from the
+// durable row, so an ordinary reattach that supplies --intent to that run is
+// not refused, while an owner it would still lose is.
+func TestAdoptRunLaunchKeepsOrdinaryReattachToStartedRunWithPersistedIntent(t *testing.T) {
+	f := newSchedFixture(t, "daemon:\n  max_concurrent_runs: 1\n")
+	running, _ := f.push("i0")
+	f.waitStarted(running)
+	if err := f.d.UpdateRunIntent(running, db.RunIntent{Summary: "inferred goal", Source: "claude", Score: 0.5}); err != nil {
+		t.Fatal(err)
+	}
+
+	result := f.adopt(running, "", "caller goal")
+	if result.Refused != "" || result.OwnerApplied || result.IntentApplied {
+		t.Fatalf("reattach with intent to a started run that has one = %+v, want a no-op", result)
+	}
+	stored, err := f.d.GetRun(running)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Intent == nil || *stored.Intent != "inferred goal" {
+		t.Fatalf("stored intent = %v, want the persisted inferred intent kept", stored.Intent)
+	}
+	if owned := f.adopt(running, "lane-a", "caller goal"); owned.Refused != ipc.AdoptRunLaunchRefusedStarted {
+		t.Fatalf("owner on a started ownerless run = %+v, want run_started", owned)
+	}
+	f.step.release(running)
+}

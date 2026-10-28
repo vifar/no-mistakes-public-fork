@@ -3871,20 +3871,23 @@ func (m *RunManager) AdoptRunLaunch(runID, owner, intent string) (ipc.AdoptRunLa
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var run *db.Run
+	// Decide from the durable row. Once a queued run starts, launchQueuedRun
+	// executes a freshly loaded record and the intent step may persist an
+	// inferred intent, while the m.runs snapshot keeps its queued values; that
+	// snapshot is consulted only for the queued precondition and updated only
+	// after a successful write, because it is what launchRun executes.
+	run, err := m.db.GetRun(runID)
+	if err != nil {
+		return result, fmt.Errorf("adopt run launch: %w", err)
+	}
+	if run == nil {
+		return result, fmt.Errorf("adopt run launch: run not found: %s", runID)
+	}
+	var snapshot *db.Run
 	queued := false
-	if owned := m.runs[runID]; owned != nil && owned.run != nil {
-		run = owned.run
-		queued = owned.state == ownershipQueued
-	} else {
-		stored, err := m.db.GetRun(runID)
-		if err != nil {
-			return result, fmt.Errorf("adopt run launch: %w", err)
-		}
-		if stored == nil {
-			return result, fmt.Errorf("adopt run launch: run not found: %s", runID)
-		}
-		run = stored
+	if owned := m.runs[runID]; owned != nil && owned.state == ownershipQueued {
+		snapshot = owned.run
+		queued = true
 	}
 	current := run.Owner()
 	if owner != "" && current != "" && current != owner {
@@ -3899,7 +3902,6 @@ func (m *RunManager) AdoptRunLaunch(runID, owner, intent string) (ipc.AdoptRunLa
 	}
 	adopted := false
 	if queued {
-		var err error
 		adopted, err = m.db.AdoptQueuedRunLaunch(runID, owner, intent)
 		if err != nil {
 			return result, err
@@ -3917,18 +3919,23 @@ func (m *RunManager) AdoptRunLaunch(runID, owner, intent string) (ipc.AdoptRunLa
 		result.Message = fmt.Sprintf("run %s was created without an %s and has already started, so the %s you passed cannot be applied", runID, strings.Join(missing, " or "), strings.Join(missing, " and "))
 		return result, nil
 	}
-	if wantOwner {
-		run.LaunchOwner = &owner
-		result.OwnerApplied = true
+	source := db.RunIntentSourceAgent
+	score := 1.0
+	for _, r := range []*db.Run{run, snapshot} {
+		if r == nil {
+			continue
+		}
+		if wantOwner {
+			r.LaunchOwner = &owner
+		}
+		if wantIntent {
+			r.Intent = &intent
+			r.IntentSource = &source
+			r.IntentScore = &score
+		}
 	}
-	if wantIntent {
-		source := db.RunIntentSourceAgent
-		score := 1.0
-		run.Intent = &intent
-		run.IntentSource = &source
-		run.IntentScore = &score
-		result.IntentApplied = true
-	}
+	result.OwnerApplied = wantOwner
+	result.IntentApplied = wantIntent
 	slog.Info("adopted launch owner/intent for queued run", "run_id", runID, "owner_applied", result.OwnerApplied, "intent_applied", result.IntentApplied, "owner", run.Owner())
 	return result, nil
 }
