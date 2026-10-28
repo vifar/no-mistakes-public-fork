@@ -161,8 +161,9 @@ func TestReviewStep_AnswerRacingTheParkStillReachesTheReviewer(t *testing.T) {
 	// Poll fast so the test does not wait out the production interval.
 	exec.SetGateReconcileTimings(20*time.Millisecond, 5*time.Second)
 
-	done := make(chan error, 1)
-	go func() { done <- exec.Execute(context.Background(), run, repo, workDir) }()
+	wait := startReviewSession(t, func(ctx context.Context) error {
+		return exec.Execute(ctx, run, repo, workDir)
+	})
 
 	waitForReviewStatus(t, database, run.ID, types.StepStatusAwaitingApproval)
 
@@ -171,13 +172,8 @@ func TestReviewStep_AnswerRacingTheParkStillReachesTheReviewer(t *testing.T) {
 		t.Fatalf("append the stranded answer: %v", err)
 	}
 
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("execute: %v", err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the run never left the review gate; the answer that raced the park was lost")
+	if err := wait(); err != nil {
+		t.Fatalf("execute: %v", err)
 	}
 
 	if turn < 2 {

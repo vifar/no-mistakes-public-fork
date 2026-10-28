@@ -121,6 +121,25 @@ func reviewSessionHarness(t *testing.T, mock *sessionMockAgent, steps []pipeline
 	return exec, database, run, repo, workDir
 }
 
+// Session tests assert gate and session behavior, not machine speed. The package
+// timeout bounds a stuck execution; test cancellation joins it before the
+// harness's database and worktree cleanup, including when an assertion fails.
+func startReviewSession(t *testing.T, execute func(context.Context) error) func() error {
+	t.Helper()
+	ctx := t.Context()
+	done := make(chan struct{})
+	var result error
+	go func() {
+		defer close(done)
+		result = execute(ctx)
+	}()
+	t.Cleanup(func() { <-done })
+	return func() error {
+		<-done
+		return result
+	}
+}
+
 func reviewCalls(calls []agent.RunOpts) []agent.RunOpts {
 	var out []agent.RunOpts
 	for _, c := range calls {
@@ -307,23 +326,17 @@ func TestReviewLoop_ParkRespondFixKeepsRoleSessions(t *testing.T) {
 	}
 
 	exec, database, run, repo, workDir := reviewSessionHarness(t, mock, []pipeline.Step{&ReviewStep{}})
-	done := make(chan error, 1)
-	go func() {
-		done <- exec.Execute(context.Background(), run, repo, workDir)
-	}()
+	wait := startReviewSession(t, func(ctx context.Context) error {
+		return exec.Execute(ctx, run, repo, workDir)
+	})
 
 	waitForReviewStatus(t, database, run.ID, types.StepStatusAwaitingApproval)
 	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"f-1"}, gateSnapshot(exec)); err != nil {
 		t.Fatalf("respond: %v", err)
 	}
 
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("execute: %v", err)
-		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("executor timed out")
+	if err := wait(); err != nil {
+		t.Fatalf("execute: %v", err)
 	}
 
 	calls := mock.snapshot()
@@ -392,9 +405,7 @@ func TestReviewLoop_OtherStepsStaySessionIsolated(t *testing.T) {
 
 	steps := []pipeline.Step{&ReviewStep{}, &DocumentStep{}, &LintStep{}}
 	exec, _, run, repo, workDir := reviewSessionHarness(t, mock, steps)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if err := exec.Execute(ctx, run, repo, workDir); err != nil {
+	if err := exec.Execute(t.Context(), run, repo, workDir); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 
@@ -417,8 +428,7 @@ func TestReviewLoop_OtherStepsStaySessionIsolated(t *testing.T) {
 
 func waitForReviewStatus(t *testing.T, database *db.DB, runID string, want types.StepStatus) {
 	t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
-	for time.Now().Before(deadline) {
+	for {
 		steps, err := database.GetStepsByRun(runID)
 		if err == nil {
 			for _, s := range steps {
@@ -429,5 +439,4 @@ func waitForReviewStatus(t *testing.T, database *db.DB, runID string, want types
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("review step never reached status %q", want)
 }

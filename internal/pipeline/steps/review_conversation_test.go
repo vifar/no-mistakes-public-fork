@@ -202,8 +202,9 @@ func TestReviewStep_AnswersResumeTheSameSessionAndFinalize(t *testing.T) {
 	exec, database, run, repo, workDir := reviewSessionHarness(t, mock, []pipeline.Step{&ReviewStep{}}, enableReviewConversation)
 	convDir = exec.ReviewConversationDir(run.ID)
 
-	done := make(chan error, 1)
-	go func() { done <- exec.Execute(context.Background(), run, repo, workDir) }()
+	wait := startReviewSession(t, func(ctx context.Context) error {
+		return exec.Execute(ctx, run, repo, workDir)
+	})
 
 	waitForReviewStatus(t, database, run.ID, types.StepStatusAwaitingApproval)
 	expected := exec.CurrentGate()
@@ -217,13 +218,8 @@ func TestReviewStep_AnswersResumeTheSameSessionAndFinalize(t *testing.T) {
 		}
 	}
 
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("execute: %v", err)
-		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("executor timed out")
+	if err := wait(); err != nil {
+		t.Fatalf("execute: %v", err)
 	}
 
 	reviews := reviewCalls(mock.snapshot())
@@ -635,8 +631,9 @@ func TestReviewStep_AnsweringARereviewQuestionDoesNotReRunTheFixer(t *testing.T)
 	exec, database, run, repo, workDir := reviewSessionHarness(t, mock, []pipeline.Step{&ReviewStep{}}, enableReviewConversation)
 	convDir = exec.ReviewConversationDir(run.ID)
 
-	done := make(chan error, 1)
-	go func() { done <- exec.Execute(context.Background(), run, repo, workDir) }()
+	wait := startReviewSession(t, func(ctx context.Context) error {
+		return exec.Execute(ctx, run, repo, workDir)
+	})
 
 	waitForReviewStatus(t, database, run.ID, types.StepStatusFixReview)
 	expected := exec.CurrentGate()
@@ -650,13 +647,8 @@ func TestReviewStep_AnsweringARereviewQuestionDoesNotReRunTheFixer(t *testing.T)
 		}
 	}
 
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("execute: %v", err)
-		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("executor timed out")
+	if err := wait(); err != nil {
+		t.Fatalf("execute: %v", err)
 	}
 
 	calls := mock.snapshot()
