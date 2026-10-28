@@ -361,7 +361,7 @@ Previous review findings to address:
 	// deliberately adds no schema field or second reviewer.
 	//
 	// The Coding standards section carries the owner's coding rules
-	// (2026-10-27): a swallowed error caused a dev outage, so it is an error;
+	// (2026-10-27/28): swallowed errors and unnecessary credentials are errors;
 	// repeated defensive checks, preemptive single-use helpers and unneeded
 	// try/catch are info-level cleanups. They are exempt from the
 	// failing-sequence threshold because the violation is the changed line.
@@ -429,6 +429,7 @@ Simplification (a dedicated pass over what the change introduced, in addition to
 
 Coding standards (check only code the change adds or modifies; these findings need no failing sequence, the changed line is the evidence):
 - A swallowed error: an empty catch, a catch or error branch that logs and continues on startup or on an order or trading path, or a fallback that returns fake success. Report it with severity "error" and action "auto-fix"; the remedy is to handle the error fully or fail loudly and closed.
+- Credentials sent where they are not required: an API key, token, or auth header attached to a request to a public endpoint (market data, status, health) or to any endpoint that does not require it, or a broader-scoped key than the API requires. Report it with severity "error" and action "auto-fix"; the remedy is to drop the credential, or send only the narrowest-scoped key the API requires.
 - A repeated defensive check: a type, null, or property-existence check on a value that was already validated at its owning boundary (API input, provider response, config, database, file, or environment), or that a schema, constructor, or internal type already guarantees. Report it with severity "info" and action "auto-fix"; the remedy is to validate once at the boundary and pass the typed value inward.
 - A preemptive single-use helper: a new helper called from one place that hides no complex boundary and whose name does not make the caller clearer. Report it with severity "info" and action "auto-fix"; the remedy is to inline it at the call site.
 - An unneeded try/catch: error handling around code that performs no network, broker, file, database, or process IO. Report it with severity "info" and action "auto-fix"; the remedy is to remove the wrapper. A catch that swallows the error is reported as a swallowed error instead.

@@ -1204,9 +1204,10 @@ func TestReviewStep_DurableFixAdequacyContract(t *testing.T) {
 	}
 }
 
-// The Coding standards section pins the owner's coding rules (2026-10-27)
-// and their severities: a swallowed error blocks the merge, the other three
-// are info-level cleanups.
+// This emitted-prompt contract pins the owner's coding rules (2026-10-27/28)
+// at the agent boundary: swallowed errors and unnecessary credentials are
+// errors; the other three rules are info-level cleanups. It rejects an omitted
+// or misclassified rule, without claiming to prove model interpretation.
 func TestReviewStep_CodingStandardsSectionContract(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -1242,6 +1243,7 @@ func TestReviewStep_CodingStandardsSectionContract(t *testing.T) {
 	for _, want := range []string{
 		"these findings need no failing sequence",
 		`A swallowed error: an empty catch, a catch or error branch that logs and continues on startup or on an order or trading path, or a fallback that returns fake success. Report it with severity "error"`,
+		`Credentials sent where they are not required: an API key, token, or auth header attached to a request to a public endpoint (market data, status, health) or to any endpoint that does not require it, or a broader-scoped key than the API requires. Report it with severity "error" and action "auto-fix"; the remedy is to drop the credential, or send only the narrowest-scoped key the API requires.`,
 		`A repeated defensive check:`,
 		`A preemptive single-use helper:`,
 		`An unneeded try/catch:`,
@@ -1250,6 +1252,9 @@ func TestReviewStep_CodingStandardsSectionContract(t *testing.T) {
 		if !strings.Contains(section, want) {
 			t.Errorf("Coding standards section missing %q:\n%s", want, section)
 		}
+	}
+	if got := strings.Count(section, `severity "error"`); got != 2 {
+		t.Errorf("Coding standards section has %d error-severity rules, want 2:\n%s", got, section)
 	}
 	if got := strings.Count(section, `severity "info"`); got != 3 {
 		t.Errorf("Coding standards section has %d info-severity rules, want 3:\n%s", got, section)

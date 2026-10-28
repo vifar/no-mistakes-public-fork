@@ -74,6 +74,7 @@ Owner rules (2026-10-27) for all new code. The review step flags violations (`in
 - Do not re-check what a type, constructor or schema already guarantees.
 - No preemptive single-use helpers: inline at the call site unless the helper is reused, hides a genuinely complex boundary, or its name makes the caller clearer.
 - Handle errors only at real IO boundaries (network, forge, file, database, process), and there handle them fully or fail loudly and closed. Never swallow an error: no discarded `err`, no log-and-continue on startup or on a path that publishes or merges.
+- Check what an API actually requires before sending credentials. Public endpoints (market data, status) get no keys or auth headers; send a key only where the API requires it, with the narrowest scope.
 - Existing code: clean up only in files you are already changing, never as unrelated churn.
 
 ## Test and CI conventions
