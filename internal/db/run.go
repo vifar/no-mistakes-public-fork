@@ -1853,6 +1853,37 @@ func (d *DB) CancelQueuedRun(id, reason string, events ...*types.RunEndingEvent)
 	return n == 1, err
 }
 
+// AdoptQueuedRunLaunch gives a still-queued run the launch owner and intent it
+// does not have yet (issue #190: a post-receive push creates a run with
+// neither, and the `axi run --owner --intent` that reattaches to it must not
+// drop them). An empty argument changes nothing. An existing owner or intent
+// is never replaced, so this is a first assignment, not a change of launch
+// ownership. The write applies only while the row is still queued: it reports
+// false when the run has left the queue, so a step can never have run under
+// values it did not see. An adopted intent is authoritative (intent_source
+// agent, score 1), exactly as if it had been passed at launch.
+func (d *DB) AdoptQueuedRunLaunch(id, owner, intent string) (bool, error) {
+	owner = strings.TrimSpace(owner)
+	intent = strings.TrimSpace(intent)
+	result, err := sqlitewrite.Exec(context.Background(), d.sql, "AdoptQueuedRunLaunch", `UPDATE runs SET
+		launch_owner = CASE WHEN ? <> '' AND TRIM(COALESCE(launch_owner, '')) = '' THEN ? ELSE launch_owner END,
+		intent_source = CASE WHEN ? <> '' AND TRIM(COALESCE(intent, '')) = '' THEN ? ELSE intent_source END,
+		intent_score = CASE WHEN ? <> '' AND TRIM(COALESCE(intent, '')) = '' THEN 1 ELSE intent_score END,
+		intent = CASE WHEN ? <> '' AND TRIM(COALESCE(intent, '')) = '' THEN ? ELSE intent END,
+		updated_at = ?
+		WHERE id = ? AND status = ?`,
+		owner, owner,
+		intent, RunIntentSourceAgent,
+		intent,
+		intent, intent,
+		now(), id, types.RunQueued)
+	if err != nil {
+		return false, fmt.Errorf("adopt queued run launch: %w", err)
+	}
+	n, err := result.RowsAffected()
+	return n == 1, err
+}
+
 func (d *DB) TerminateUnstartedRun(id, reason string, status types.RunStatus) (bool, error) {
 	return d.terminateUnstartedRun(id, reason, status, types.RunPending)
 }

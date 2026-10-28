@@ -1283,6 +1283,21 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return &ipc.UpdateRunClosingIssueRefsResult{OK: true}, nil
 	})
 
+	srv.Handle(ipc.MethodAdoptRunLaunch, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		if err := refuseNested(ctx, false); err != nil {
+			return nil, err
+		}
+		var p ipc.AdoptRunLaunchParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		result, err := mgr.AdoptRunLaunch(p.RunID, p.Owner, p.Intent)
+		if err != nil {
+			return nil, err
+		}
+		return &result, nil
+	})
+
 	srv.Handle(ipc.MethodGetRun, func(_ context.Context, params json.RawMessage) (interface{}, error) {
 		var p ipc.GetRunParams
 		if err := json.Unmarshal(params, &p); err != nil {

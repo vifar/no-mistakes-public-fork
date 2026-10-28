@@ -45,6 +45,7 @@ const (
 	MethodHealth                    = "health"
 	MethodShutdown                  = "shutdown"
 	MethodUpdateRunClosingIssueRefs = "update_run_closing_issue_refs"
+	MethodAdoptRunLaunch            = "adopt_run_launch"
 )
 
 // JSON-RPC 2.0 error codes.
@@ -390,6 +391,37 @@ const ClosingIssueRefsRejectedPRBodyComposed = "pr_body_already_composed"
 type UpdateRunClosingIssueRefsResult struct {
 	OK     bool   `json:"ok"`
 	Reason string `json:"reason,omitempty"`
+}
+
+// AdoptRunLaunchParams asks the daemon to give a reattached run the owner and
+// intent the caller launched with. A post-receive push creates a run with
+// neither; `axi run --owner X --intent ...` that then reattaches to it must not
+// drop them silently (issue #190).
+type AdoptRunLaunchParams struct {
+	RunID  string `json:"run_id"`
+	Owner  string `json:"owner,omitempty"`
+	Intent string `json:"intent,omitempty"`
+}
+
+// Refusal codes for AdoptRunLaunchResult.Refused.
+const (
+	// AdoptRunLaunchRefusedStarted: the run has no owner or intent to adopt into
+	// but has already left the queue, so a step may have run without them.
+	AdoptRunLaunchRefusedStarted = "run_started"
+	// AdoptRunLaunchRefusedOwnerConflict: the run already has a different owner.
+	// Launch ownership is never replaced.
+	AdoptRunLaunchRefusedOwnerConflict = "owner_conflict"
+)
+
+// AdoptRunLaunchResult reports what the daemon applied. An owner or intent the
+// run already has is kept and never replaced: an equal owner is a no-op, and an
+// existing intent stays the run's intent, as on any reattach. Refused is empty
+// when nothing the caller supplied was lost.
+type AdoptRunLaunchResult struct {
+	OwnerApplied  bool   `json:"owner_applied,omitempty"`
+	IntentApplied bool   `json:"intent_applied,omitempty"`
+	Refused       string `json:"refused,omitempty"`
+	Message       string `json:"message,omitempty"`
 }
 
 // --- Method results ---

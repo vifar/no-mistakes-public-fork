@@ -3848,3 +3848,87 @@ func (m *RunManager) cancelRunIDs(ids []string, events ...*types.RunEndingEvent)
 	}
 	return nil
 }
+
+// AdoptRunLaunch gives a reattached run the owner and intent its caller
+// launched with, when the run has none and has never started (issue #190).
+//
+// A post-receive push creates a run with no owner and no intent; an
+// `axi run --owner X --intent ...` that then reattaches to it used to keep
+// both empty without a word. A queued run has not run a step, so adopting the
+// caller's values is exactly what launching with them would have done. It
+// holds m.mu across the check and the write, the lock the scheduler claims a
+// queued run under, so the run cannot start between them, and it updates the
+// queued in-memory run that launchRun will execute. Once the run has left the
+// queue, anything the caller supplied that the run lacks is refused rather
+// than applied to a run whose earlier steps never saw it. An owner the run
+// already has is never replaced.
+func (m *RunManager) AdoptRunLaunch(runID, owner, intent string) (ipc.AdoptRunLaunchResult, error) {
+	owner = strings.TrimSpace(owner)
+	intent = strings.TrimSpace(intent)
+	var result ipc.AdoptRunLaunchResult
+	if owner == "" && intent == "" {
+		return result, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var run *db.Run
+	queued := false
+	if owned := m.runs[runID]; owned != nil && owned.run != nil {
+		run = owned.run
+		queued = owned.state == ownershipQueued
+	} else {
+		stored, err := m.db.GetRun(runID)
+		if err != nil {
+			return result, fmt.Errorf("adopt run launch: %w", err)
+		}
+		if stored == nil {
+			return result, fmt.Errorf("adopt run launch: run not found: %s", runID)
+		}
+		run = stored
+	}
+	current := run.Owner()
+	if owner != "" && current != "" && current != owner {
+		result.Refused = ipc.AdoptRunLaunchRefusedOwnerConflict
+		result.Message = fmt.Sprintf("run %s is owned by %s, not %s; launch ownership is never replaced", runID, current, owner)
+		return result, nil
+	}
+	wantOwner := owner != "" && current == ""
+	wantIntent := intent != "" && (run.Intent == nil || strings.TrimSpace(*run.Intent) == "")
+	if !wantOwner && !wantIntent {
+		return result, nil
+	}
+	adopted := false
+	if queued {
+		var err error
+		adopted, err = m.db.AdoptQueuedRunLaunch(runID, owner, intent)
+		if err != nil {
+			return result, err
+		}
+	}
+	if !adopted {
+		var missing []string
+		if wantOwner {
+			missing = append(missing, "owner")
+		}
+		if wantIntent {
+			missing = append(missing, "intent")
+		}
+		result.Refused = ipc.AdoptRunLaunchRefusedStarted
+		result.Message = fmt.Sprintf("run %s was created without an %s and has already started, so the %s you passed cannot be applied", runID, strings.Join(missing, " or "), strings.Join(missing, " and "))
+		return result, nil
+	}
+	if wantOwner {
+		run.LaunchOwner = &owner
+		result.OwnerApplied = true
+	}
+	if wantIntent {
+		source := db.RunIntentSourceAgent
+		score := 1.0
+		run.Intent = &intent
+		run.IntentSource = &source
+		run.IntentScore = &score
+		result.IntentApplied = true
+	}
+	slog.Info("adopted launch owner/intent for queued run", "run_id", runID, "owner_applied", result.OwnerApplied, "intent_applied", result.IntentApplied, "owner", run.Owner())
+	return result, nil
+}
