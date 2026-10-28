@@ -308,9 +308,9 @@ func TestReviewFixLongSummaryLiveJourney(t *testing.T) {
 
 // The documented byte bound must reject a 4097-byte report even though the
 // Review subject could be shortened. The fixer edits before returning it, so
-// publishing any repair would violate the contract. The step-level
-// TestReviewStep_RejectsOversizedFixSummary checks rollback before terminal
-// daemon cleanup can remove the worktree.
+// publishing any repair would violate the contract. Rollback is checked by
+// TestReviewStep_RejectsOversizedFixSummary before terminal daemon cleanup
+// removes the worktree; this journey checks the durable outcome.
 func TestReviewFixOversizedSummaryLiveJourney(t *testing.T) {
 	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: configurableFixCommitScenario(t, strings.Repeat("x", 4097))})
 	cfg := filepath.Join(h.NMHome, "config.yaml")
