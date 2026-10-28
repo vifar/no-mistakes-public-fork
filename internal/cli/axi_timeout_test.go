@@ -548,6 +548,9 @@ func newAxiTimeoutFixture(t *testing.T, opts axiTimeoutOpts) *axiTimeoutFixture 
 	srv.Handle(ipc.MethodGateContext, func(context.Context, json.RawMessage) (interface{}, error) {
 		return &ipc.GateContextResult{Nested: false}, nil
 	})
+	srv.Handle(ipc.MethodAdoptRunLaunch, func(context.Context, json.RawMessage) (interface{}, error) {
+		return &ipc.AdoptRunLaunchResult{}, nil
+	})
 	if !opts.withoutAcceptedGaps {
 		srv.Handle(ipc.MethodProbeAcceptedGaps, func(context.Context, json.RawMessage) (interface{}, error) {
 			return &ipc.ProbeAcceptedGapsResult{OK: true}, nil

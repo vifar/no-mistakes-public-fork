@@ -170,7 +170,8 @@ func TestAxiRunIntentAbsentStillRequiresIntentForNewRun(t *testing.T) {
 }
 
 func TestAxiRunIntentReattachDoesNotReplaceIntent(t *testing.T) {
-	// Only lookup/drive methods exist: any launch or mutation would fail.
+	// The daemon already has intent, so the adoption RPC applies nothing.
+	// No launch method exists: an accidental new launch would fail.
 	fx := newAxiTimeoutFixture(t, axiTimeoutOpts{})
 	fx.setGetRun(func(context.Context, int) (*ipc.RunInfo, error) { return fx.completed(), nil })
 	text := "a different goal\n"

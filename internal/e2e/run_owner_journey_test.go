@@ -7,8 +7,10 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -216,7 +218,11 @@ func TestRunOwnerLaunchJourney(t *testing.T) {
 	if run.Owner != "flag-owner" || run.SubmittedHeadSHA == nil || *run.SubmittedHeadSHA != head {
 		t.Fatalf("flag precedence/trim or head lost: %+v", run)
 	}
-	statusCommand(t, h, h.WorkDir, "axi", "run", "--owner", "observer-owner")
+	out, err = h.Run("axi", "run", "--owner", "observer-owner")
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 2 || !strings.Contains(out, "refusing to reattach (owner_conflict)") {
+		t.Fatalf("conflicting owner must be refused with exit 2: %v\n%s", err, out)
+	}
 	if got := h.ActiveRun(branch); got == nil || got.ID != run.ID || got.Owner != "flag-owner" {
 		t.Fatalf("reattach changed responsibility: %+v", got)
 	}
