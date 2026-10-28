@@ -2,9 +2,11 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 )
@@ -16,7 +18,7 @@ type scriptedAdoptClient struct {
 	result ipc.AdoptRunLaunchResult
 }
 
-func (s *scriptedAdoptClient) Call(method string, params interface{}, result interface{}) error {
+func (s *scriptedAdoptClient) CallWithContext(_ context.Context, method string, params interface{}, result interface{}, _ time.Duration) error {
 	s.calls++
 	if method != ipc.MethodAdoptRunLaunch {
 		return errors.New("unexpected method " + method)
@@ -34,7 +36,7 @@ func (s *scriptedAdoptClient) Call(method string, params interface{}, result int
 func TestAdoptReattachedRunLaunchSendsOwnerAndIntent(t *testing.T) {
 	client := &scriptedAdoptClient{result: ipc.AdoptRunLaunchResult{OwnerApplied: true, IntentApplied: true}}
 	var notices bytes.Buffer
-	if err := adoptReattachedRunLaunch(client, &notices, "run-1", "lane-a", "Ship it"); err != nil {
+	if err := adoptReattachedRunLaunch(context.Background(), client, &notices, "run-1", "lane-a", "Ship it"); err != nil {
 		t.Fatalf("adopt = %v", err)
 	}
 	if client.params == nil || client.params.RunID != "run-1" || client.params.Owner != "lane-a" || client.params.Intent != "Ship it" {
@@ -47,15 +49,15 @@ func TestAdoptReattachedRunLaunchSendsOwnerAndIntent(t *testing.T) {
 
 func TestAdoptReattachedRunLaunchSkipsWhenNothingSupplied(t *testing.T) {
 	client := &scriptedAdoptClient{}
-	if err := adoptReattachedRunLaunch(client, &bytes.Buffer{}, "run-1", "", "  "); err != nil || client.calls != 0 {
+	if err := adoptReattachedRunLaunch(context.Background(), client, &bytes.Buffer{}, "run-1", "", "  "); err != nil || client.calls != 0 {
 		t.Fatalf("empty adopt err=%v calls=%d, want no call", err, client.calls)
 	}
 }
 
 func TestAdoptReattachedRunLaunchRefusalIsAnError(t *testing.T) {
-	for _, code := range []string{ipc.AdoptRunLaunchRefusedStarted, ipc.AdoptRunLaunchRefusedOwnerConflict} {
+	for _, code := range []string{ipc.AdoptRunLaunchRefusedStarted, ipc.AdoptRunLaunchRefusedOwnerConflict, ipc.AdoptRunLaunchRefusedLaunchBound} {
 		client := &scriptedAdoptClient{result: ipc.AdoptRunLaunchResult{Refused: code, Message: "run run-1 refused: " + code}}
-		err := adoptReattachedRunLaunch(client, &bytes.Buffer{}, "run-1", "lane-a", "Ship it")
+		err := adoptReattachedRunLaunch(context.Background(), client, &bytes.Buffer{}, "run-1", "lane-a", "Ship it")
 		var refusal *launchAdoptionRefusedError
 		if !errors.As(err, &refusal) || refusal.Code != code || !strings.Contains(err.Error(), code) {
 			t.Fatalf("refusal %s: err = %v, want a launchAdoptionRefusedError", code, err)
@@ -67,12 +69,12 @@ func TestAdoptReattachedRunLaunchRefusalIsAnError(t *testing.T) {
 // fails closed with a restart instruction rather than dropping them.
 func TestAdoptReattachedRunLaunchRefusesOnOlderDaemon(t *testing.T) {
 	client := &scriptedAdoptClient{err: &ipc.RPCError{Code: ipc.ErrMethodNotFound, Message: "method not found: adopt_run_launch"}}
-	err := adoptReattachedRunLaunch(client, &bytes.Buffer{}, "run-1", "lane-a", "")
+	err := adoptReattachedRunLaunch(context.Background(), client, &bytes.Buffer{}, "run-1", "lane-a", "")
 	if err == nil || !strings.Contains(err.Error(), "too old") || !strings.Contains(err.Error(), "restart") {
 		t.Fatalf("older daemon err = %v, want a fail-closed restart instruction", err)
 	}
 	other := &scriptedAdoptClient{err: errors.New("database unavailable")}
-	if err := adoptReattachedRunLaunch(other, &bytes.Buffer{}, "run-1", "lane-a", ""); err == nil || !strings.Contains(err.Error(), "database unavailable") {
+	if err := adoptReattachedRunLaunch(context.Background(), other, &bytes.Buffer{}, "run-1", "lane-a", ""); err == nil || !strings.Contains(err.Error(), "database unavailable") {
 		t.Fatalf("transport error = %v, want it surfaced", err)
 	}
 }

@@ -411,6 +411,8 @@ const (
 	// AdoptRunLaunchRefusedOwnerConflict: the run already has a different owner.
 	// Launch ownership is never replaced.
 	AdoptRunLaunchRefusedOwnerConflict = "owner_conflict"
+	// Nonce-backed launch values are immutable receipt bindings.
+	AdoptRunLaunchRefusedLaunchBound = "launch_bound"
 )
 
 // AdoptRunLaunchResult reports what the daemon applied. An owner or intent the

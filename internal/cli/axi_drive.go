@@ -418,6 +418,9 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 			return emitError(cmd, 1, fmt.Sprintf("get active run: %v", err))
 		}
 		if active != nil {
+			if planRequested {
+				return emitError(cmd, 2, "--verification-plan is accepted only when starting a new run; omit it to reattach")
+			}
 			if !active.Shipping.Matches(shipping) {
 				return emitError(cmd, 2, "active run has a different shipping pin")
 			}
@@ -437,9 +440,15 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 			}
 			// A push-created run has no owner and no intent; reattaching must
 			// not drop the ones this caller launched with (issue #190).
-			if err := adoptReattachedRunLaunch(env.client, cmd.ErrOrStderr(), active.ID, types.RunOwnerFromContext(ctx), intent); err != nil {
+			if err := adoptReattachedRunLaunch(driveCtx, env.client, cmd.ErrOrStderr(), active.ID, types.RunOwnerFromContext(ctx), intent); err != nil {
+				if isAxiWaitElapsed(ctx, driveCtx, err) {
+					return emitAxiWaitElapsed(cmd, wait, "no-mistakes axi run")
+				}
 				var refusal *launchAdoptionRefusedError
 				if errors.As(err, &refusal) {
+					if refusal.Code == ipc.AdoptRunLaunchRefusedLaunchBound {
+						return emitError(cmd, 2, err.Error(), "Reattach with the original launch nonce and launch values, or omit --owner/--intent to observe the run")
+					}
 					if refusal.Code == ipc.AdoptRunLaunchRefusedOwnerConflict {
 						return emitError(cmd, 2, err.Error(), "Drive the run as its owner, or inspect it with `no-mistakes axi status --run "+active.ID+"`")
 					}
@@ -716,14 +725,16 @@ func (e *launchAdoptionRefusedError) Error() string {
 // without them or is owned by someone else. An older daemon without the
 // method cannot apply them, so the reattach fails closed rather than dropping
 // them.
-func adoptReattachedRunLaunch(client closingIssueRefsUpdateClient, notices io.Writer, runID, owner, intent string) error {
+func adoptReattachedRunLaunch(ctx context.Context, client interface {
+	CallWithContext(context.Context, string, interface{}, interface{}, time.Duration) error
+}, notices io.Writer, runID, owner, intent string) error {
 	owner = strings.TrimSpace(owner)
 	intent = strings.TrimSpace(intent)
 	if owner == "" && intent == "" {
 		return nil
 	}
 	var result ipc.AdoptRunLaunchResult
-	if err := client.Call(ipc.MethodAdoptRunLaunch, &ipc.AdoptRunLaunchParams{RunID: runID, Owner: owner, Intent: intent}, &result); err != nil {
+	if err := client.CallWithContext(ctx, ipc.MethodAdoptRunLaunch, &ipc.AdoptRunLaunchParams{RunID: runID, Owner: owner, Intent: intent}, &result, 0); err != nil {
 		var rpcErr *ipc.RPCError
 		if errors.As(err, &rpcErr) && rpcErr.Code == ipc.ErrMethodNotFound {
 			return fmt.Errorf("the running daemon is too old to apply --owner/--intent to reattached run %s; restart it with the current binary, or omit --owner/--intent to reattach", runID)

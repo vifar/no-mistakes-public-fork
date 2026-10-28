@@ -141,3 +141,39 @@ func TestReattachKeepsStartedInferredIntent(t *testing.T) {
 	}
 	t.Logf("persisted intent remained %q (source %q), owner remained empty", *after.summary, *after.source)
 }
+
+// A rejected new-run-only plan must not leave authoritative launch values
+// behind on the queued run, including when the caller corrects and retries.
+func TestReattachVerificationPlanRefusalDoesNotAdoptLaunchValues(t *testing.T) {
+	t.Setenv("NO_MISTAKES_OWNER", "")
+	h := newReattachHarness(t, "daemon:\n  max_concurrent_runs: 1\n  hold_slot_while_parked: true\n")
+	h.CommitChange("blocker", "parkme.txt", "hold\n", "blocker")
+	if out, err := h.Run("axi", "run", "--intent", "Hold the slot", "--wait", "2m"); err != nil {
+		t.Fatalf("blocker: %v\n%s", err, out)
+	}
+	waitForStepStatus(t, h, "blocker", types.StepReview, types.StepStatusAwaitingApproval, 2*time.Minute)
+	h.CommitChange("feature/rejected-plan", "adopt.txt", "plan\n", "pushed")
+	h.PushToGate("feature/rejected-plan")
+	run := h.ActiveRun("feature/rejected-plan")
+	if run == nil || run.Status != types.RunQueued || run.Owner != "" {
+		t.Fatalf("expected ownerless queued run: %+v", run)
+	}
+	plan := filepath.Join(t.TempDir(), "plan.txt")
+	if err := os.WriteFile(plan, []byte("Verify the intended behavior\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := h.Run("axi", "run", "--owner", "lane-a", "--intent", "Rejected goal", "--verification-plan", plan, "--wait", "5s")
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 2 || !strings.Contains(out, "--verification-plan is accepted only when starting a new run") {
+		t.Fatalf("expected plan refusal: %v\n%s", err, out)
+	}
+	stored := readRunIntent(t, h.NMHome, run.ID)
+	if owner := h.RunInfo(run.ID).Owner; owner != "" || stored.summary != nil {
+		t.Fatalf("refused command persisted owner=%q intent=%v", owner, stored.summary)
+	}
+	out, err = h.Run("axi", "run", "--owner", "lane-b", "--intent", "Corrected goal", "--wait", "1s")
+	stored = readRunIntent(t, h.NMHome, run.ID)
+	if h.RunInfo(run.ID).Owner != "lane-b" || stored.summary == nil || *stored.summary != "Corrected goal" {
+		t.Fatalf("corrected retry could not adopt its goal: %v\n%s; stored=%+v", err, out, stored)
+	}
+}

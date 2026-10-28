@@ -3863,6 +3863,9 @@ func (m *RunManager) cancelRunIDs(ids []string, events ...*types.RunEndingEvent)
 // than applied to a run whose earlier steps never saw it. An owner the run
 // already has is never replaced.
 func (m *RunManager) AdoptRunLaunch(runID, owner, intent string) (ipc.AdoptRunLaunchResult, error) {
+	if err := types.ValidateRunOwner(owner); err != nil {
+		return ipc.AdoptRunLaunchResult{}, err
+	}
 	owner = strings.TrimSpace(owner)
 	intent = strings.TrimSpace(intent)
 	var result ipc.AdoptRunLaunchResult
@@ -3898,6 +3901,11 @@ func (m *RunManager) AdoptRunLaunch(runID, owner, intent string) (ipc.AdoptRunLa
 	wantOwner := owner != "" && current == ""
 	wantIntent := intent != "" && (run.Intent == nil || strings.TrimSpace(*run.Intent) == "")
 	if !wantOwner && !wantIntent {
+		return result, nil
+	}
+	if run.LaunchNonce != nil {
+		result.Refused = ipc.AdoptRunLaunchRefusedLaunchBound
+		result.Message = fmt.Sprintf("run %s has a nonce-bound launch receipt; missing launch values cannot be adopted", runID)
 		return result, nil
 	}
 	adopted := false

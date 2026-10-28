@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -136,4 +137,53 @@ func TestAdoptRunLaunchKeepsOrdinaryReattachToStartedRunWithPersistedIntent(t *t
 		t.Fatalf("owner on a started ownerless run = %+v, want run_started", owned)
 	}
 	f.step.release(running)
+}
+
+// A launch receipt binds its original owner, including an empty owner.
+// Ordinary reattachment must not break an otherwise valid nonce replay.
+func TestAdoptRunLaunchPreservesNonceBoundOwner(t *testing.T) {
+	f := newSchedFixture(t, "daemon:\n  max_concurrent_runs: 1\n")
+	running, _ := f.push("nonce-blocker")
+	f.waitStarted(running)
+	params := &ipc.StartFreshRunParams{RepoID: f.repoID, Branch: "main", HeadSHA: f.head, Intent: "original goal", LaunchNonce: "bound-owner", ValidationGeneration: "generation-1"}
+	var first ipc.StartFreshRunResult
+	if err := f.client.Call(ipc.MethodStartFreshRun, params, &first); err != nil {
+		t.Fatal(err)
+	}
+	result := f.adopt(first.Receipt.RunID, "lane-a", "replacement goal")
+	stored, err := f.d.GetRun(first.Receipt.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Refused == "" || result.OwnerApplied || result.IntentApplied || stored.Owner() != "" || stored.Intent == nil || *stored.Intent != "original goal" {
+		t.Fatalf("nonce adoption = %+v, stored owner=%q intent=%v", result, stored.Owner(), stored.Intent)
+	}
+	var replay ipc.StartFreshRunResult
+	if err := f.client.Call(ipc.MethodStartFreshRun, params, &replay); err != nil {
+		t.Fatalf("original launch no longer replays: %v", err)
+	}
+	if replay.Receipt.RunID != first.Receipt.RunID || replay.Receipt.Disposition != "reused" {
+		t.Fatalf("replay=%+v first=%+v", replay, first)
+	}
+}
+
+func TestAdoptRunLaunchRejectsInvalidOwnerBeforeMutation(t *testing.T) {
+	f := newSchedFixture(t, "daemon:\n  max_concurrent_runs: 1\n")
+	running, _ := f.push("invalid-owner-blocker")
+	f.waitStarted(running)
+	queued, _ := f.push("invalid-owner-queued")
+	for _, owner := range []string{strings.Repeat("x", 257), "lane\x00a", "lane\na", "lane-a\n"} {
+		var result ipc.AdoptRunLaunchResult
+		err := f.client.Call(ipc.MethodAdoptRunLaunch, &ipc.AdoptRunLaunchParams{RunID: queued, Owner: owner, Intent: "must not persist"}, &result)
+		stored, readErr := f.d.GetRun(queued)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if err == nil || !strings.Contains(err.Error(), "owner must be valid UTF-8") {
+			t.Errorf("owner %q: error=%v; expected owner validation refusal", owner, err)
+		}
+		if stored.Owner() != "" || stored.Intent != nil {
+			t.Fatalf("rejected owner %q mutated owner=%q intent=%v", owner, stored.Owner(), stored.Intent)
+		}
+	}
 }
