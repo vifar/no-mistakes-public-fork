@@ -63,16 +63,13 @@ func TestAdoptReattachedRunLaunchRefusalIsAnError(t *testing.T) {
 	}
 }
 
-// An older daemon has no adopt method. Reattaching still works, but the
-// caller is told its owner/intent may not have reached the run, never silence.
-func TestAdoptReattachedRunLaunchWarnsOnOlderDaemon(t *testing.T) {
+// An older daemon has no adopt method. Reattaching with --owner/--intent then
+// fails closed with a restart instruction rather than dropping them.
+func TestAdoptReattachedRunLaunchRefusesOnOlderDaemon(t *testing.T) {
 	client := &scriptedAdoptClient{err: &ipc.RPCError{Code: ipc.ErrMethodNotFound, Message: "method not found: adopt_run_launch"}}
-	var notices bytes.Buffer
-	if err := adoptReattachedRunLaunch(client, &notices, "run-1", "lane-a", ""); err != nil {
-		t.Fatalf("older daemon should not fail the reattach: %v", err)
-	}
-	if !strings.Contains(notices.String(), "warning") || !strings.Contains(strings.ToLower(notices.String()), "restart the daemon") {
-		t.Fatalf("older daemon notice = %q, want a restart warning", notices.String())
+	err := adoptReattachedRunLaunch(client, &bytes.Buffer{}, "run-1", "lane-a", "")
+	if err == nil || !strings.Contains(err.Error(), "too old") || !strings.Contains(err.Error(), "restart") {
+		t.Fatalf("older daemon err = %v, want a fail-closed restart instruction", err)
 	}
 	other := &scriptedAdoptClient{err: errors.New("database unavailable")}
 	if err := adoptReattachedRunLaunch(other, &bytes.Buffer{}, "run-1", "lane-a", ""); err == nil || !strings.Contains(err.Error(), "database unavailable") {

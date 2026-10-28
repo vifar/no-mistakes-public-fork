@@ -440,7 +440,12 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 			if err := adoptReattachedRunLaunch(env.client, cmd.ErrOrStderr(), active.ID, types.RunOwnerFromContext(ctx), intent); err != nil {
 				var refusal *launchAdoptionRefusedError
 				if errors.As(err, &refusal) {
-					return emitError(cmd, 2, err.Error(), launchAdoptionRefusedHelp(active.ID, refusal.Code)...)
+					if refusal.Code == ipc.AdoptRunLaunchRefusedOwnerConflict {
+						return emitError(cmd, 2, err.Error(), "Drive the run as its owner, or inspect it with `no-mistakes axi status --run "+active.ID+"`")
+					}
+					return emitError(cmd, 2, err.Error(),
+						"The run was most likely created by a plain `git push` to the gate, which records no owner or intent",
+						"Abort it with `no-mistakes axi abort --run "+active.ID+" --owner <you> --reason <why>`, then rerun `no-mistakes axi run --owner ... --intent-file ...` without pushing first")
 				}
 				return emitError(cmd, 1, err.Error())
 			}
@@ -709,8 +714,8 @@ func (e *launchAdoptionRefusedError) Error() string {
 // keep both empty without a word. The daemon applies them while the run is
 // still queued, keeps any it already has, and refuses when the run has started
 // without them or is owned by someone else. An older daemon without the
-// method cannot apply them; the reattach proceeds with a warning, never in
-// silence.
+// method cannot apply them, so the reattach fails closed rather than dropping
+// them.
 func adoptReattachedRunLaunch(client closingIssueRefsUpdateClient, notices io.Writer, runID, owner, intent string) error {
 	owner = strings.TrimSpace(owner)
 	intent = strings.TrimSpace(intent)
@@ -721,8 +726,7 @@ func adoptReattachedRunLaunch(client closingIssueRefsUpdateClient, notices io.Wr
 	if err := client.Call(ipc.MethodAdoptRunLaunch, &ipc.AdoptRunLaunchParams{RunID: runID, Owner: owner, Intent: intent}, &result); err != nil {
 		var rpcErr *ipc.RPCError
 		if errors.As(err, &rpcErr) && rpcErr.Code == ipc.ErrMethodNotFound {
-			fmt.Fprintf(notices, "warning: the running daemon cannot apply --owner/--intent to reattached run %s; they may not be recorded. Restart the daemon with the current binary.\n", runID)
-			return nil
+			return fmt.Errorf("the running daemon is too old to apply --owner/--intent to reattached run %s; restart it with the current binary, or omit --owner/--intent to reattach", runID)
 		}
 		return fmt.Errorf("apply owner/intent to reattached run %s: %w", runID, err)
 	}
@@ -740,16 +744,6 @@ func adoptReattachedRunLaunch(client closingIssueRefsUpdateClient, notices io.Wr
 		fmt.Fprintf(notices, "reattached to queued run %s and applied its missing %s\n", runID, strings.Join(applied, " and "))
 	}
 	return nil
-}
-
-func launchAdoptionRefusedHelp(runID, code string) []string {
-	if code == ipc.AdoptRunLaunchRefusedOwnerConflict {
-		return []string{"Drive the run as its owner, or inspect it with `no-mistakes axi status --run " + runID + "`"}
-	}
-	return []string{
-		"The run was most likely created by a plain `git push` to the gate, which records no owner or intent",
-		"Abort it with `no-mistakes axi abort --run " + runID + " --owner <you> --reason <why>`, then rerun `no-mistakes axi run --owner ... --intent-file ...` without pushing first",
-	}
 }
 
 // errClosingIssueRefsPRBodyComposed reports that the run's PR body was already
