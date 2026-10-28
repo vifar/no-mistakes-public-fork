@@ -14,6 +14,7 @@ import (
 // an accounted catch-up keeps its generation and writes an exact-head
 // attestation before publishing; a real foreign sibling publishes nothing.
 func TestAccountedForgeHeadPublicationBoundary(t *testing.T) {
+	t.Parallel()
 	for _, foreign := range []bool{false, true} {
 		t.Run(fmt.Sprintf("foreign=%t", foreign), func(t *testing.T) {
 			f, logFile := publicationAttestationFixture(t)
@@ -87,6 +88,7 @@ func TestAccountedForgeHeadPublicationBoundary(t *testing.T) {
 }
 
 func TestAccountedForgeHeadPRAndCIGuards(t *testing.T) {
+	t.Parallel()
 	for _, step := range []types.StepName{types.StepPR, types.StepCI} {
 		for _, foreign := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/foreign=%t", step, foreign), func(t *testing.T) {
@@ -122,6 +124,7 @@ func TestAccountedForgeHeadPRAndCIGuards(t *testing.T) {
 }
 
 func TestAccountedForgeHeadPRGuardCatchesUpToPublishedAncestor(t *testing.T) {
+	t.Parallel()
 	for _, afterStep := range []bool{false, true} {
 		for _, kind := range []string{"catch-up", "unchanged ancestor", "exact", "foreign", "source", "base", "local", "merged", "closed"} {
 			t.Run(fmt.Sprintf("after=%t/%s", afterStep, kind), func(t *testing.T) {
@@ -216,6 +219,7 @@ func TestAccountedForgeHeadPRGuardCatchesUpToPublishedAncestor(t *testing.T) {
 }
 
 func TestAccountedForgeHeadPRGuardKeepsTheAcceptedPreRebaseObservation(t *testing.T) {
+	t.Parallel()
 	for _, afterStep := range []bool{false, true} {
 		t.Run(fmt.Sprintf("after=%t", afterStep), func(t *testing.T) {
 			c, selected := accountedRewindFixture(t)

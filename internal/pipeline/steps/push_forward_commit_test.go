@@ -254,6 +254,7 @@ func TestPushStep_TargetAdvanceRejectsUnrecordedCorrection(t *testing.T) {
 }
 
 func TestPushStep_RefusedCorrectionKeepsCommitButNotTheReceipt(t *testing.T) {
+	t.Parallel()
 	c, _ := publicationFixture(t)
 	oldHead := c.Run.HeadSHA
 	advanceRewindTarget(t, c)

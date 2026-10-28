@@ -16,6 +16,7 @@ import (
 // its correction. Refusal or interruption preserves the commit, but neither
 // may replace the comparison, its pin, or its pending rewind observation.
 func TestPushStep_CorrectionReceiptWaitsForTargetValidation(t *testing.T) {
+	t.Parallel()
 	for _, provider := range []string{"local", "github"} {
 		for _, refusal := range []string{"rewritten target", "exhausted budget", "unreadable target", "interrupted observation", "valid target"} {
 			if provider == "local" && refusal == "valid target" {

@@ -15,6 +15,7 @@ import (
 
 // Drive the real boundary with disposable Git ancestry and forge responses.
 func TestAccountedForgeHeadCoreBoundaries(t *testing.T) {
+	t.Parallel()
 	for _, step := range []types.StepName{types.StepRebase, types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepPush} {
 		for _, kind := range []string{"catch-up", "ancestor", "simultaneous fix", "foreign", "unaccounted local", "wrong base"} {
 			t.Run(string(step)+"/"+kind, func(t *testing.T) {
@@ -82,6 +83,7 @@ func TestAccountedForgeHeadCoreBoundaries(t *testing.T) {
 }
 
 func TestAccountedForgeHeadAttestation(t *testing.T) {
+	t.Parallel()
 	for _, foreign := range []bool{false, true} {
 		t.Run(fmt.Sprint(foreign), func(t *testing.T) {
 			c, h, pr := mutationComparisonFixture(t)
@@ -109,6 +111,7 @@ func TestAccountedForgeHeadAttestation(t *testing.T) {
 }
 
 func TestAccountedForgeHeadTargetRewinds(t *testing.T) {
+	t.Parallel()
 	for _, pending := range []bool{false, true} {
 		for _, foreign := range []bool{false, true} {
 			t.Run(fmt.Sprintf("pending=%t/foreign=%t", pending, foreign), func(t *testing.T) {
@@ -151,6 +154,7 @@ func TestAccountedForgeHeadTargetRewinds(t *testing.T) {
 }
 
 func TestAccountedForgeHeadPreservesTestOwnerClaim(t *testing.T) {
+	t.Parallel()
 	claim := pendingReviewTestClaim("true")
 	c, receipt := completedReviewSupportFixture(t, claim)
 	stale := receipt.PRContextCandidate
@@ -197,6 +201,7 @@ func TestAccountedForgeHeadPreservesTestOwnerClaim(t *testing.T) {
 }
 
 func TestAccountedForgeHeadPushCorrection(t *testing.T) {
+	t.Parallel()
 	for _, foreign := range []bool{false, true} {
 		t.Run(fmt.Sprint(foreign), func(t *testing.T) {
 			c, _, _ := unpublishedAttestationFixture(t)
@@ -257,6 +262,7 @@ func TestAccountedForgeHeadPushCorrection(t *testing.T) {
 }
 
 func TestAccountedForgeHeadDurableOwnPush(t *testing.T) {
+	t.Parallel()
 	c, h, pr := mutationComparisonFixture(t)
 	old, _ := c.DB.GetRunPRContext(c.Run.ID)
 	gitCmd(t, c.WorkDir, "checkout", "-b", "old-published", c.Run.BaseSHA)
@@ -278,6 +284,7 @@ func TestAccountedForgeHeadDurableOwnPush(t *testing.T) {
 }
 
 func TestAccountedForgeHeadWithTargetAndReviewFix(t *testing.T) {
+	t.Parallel()
 	c, selected := rewindFixture(t)
 	selected.PRURL = "https://github.com/test/repo/pull/42"
 	selected.SourceRepo = "test/repo"
@@ -344,6 +351,7 @@ func setAccountedForgeFacts(t *testing.T, c *pipeline.StepContext, selected pipe
 }
 
 func TestAccountedForgeHeadAfterRebaseKeepsBothLocalProofs(t *testing.T) {
+	t.Parallel()
 	for _, pending := range []bool{false, true} {
 		for _, observation := range []string{"pinned", "rebased", "foreign"} {
 			t.Run(fmt.Sprintf("pending=%t/%s", pending, observation), func(t *testing.T) {
@@ -403,6 +411,7 @@ func TestAccountedForgeHeadAfterRebaseKeepsBothLocalProofs(t *testing.T) {
 }
 
 func TestAccountedForgeHeadCatchUpAtRewindIntegration(t *testing.T) {
+	t.Parallel()
 	for _, strategy := range []string{config.RebaseStrategyRebase, config.RebaseStrategyMerge} {
 		for _, fixing := range []bool{false, true} {
 			for _, drift := range []string{"catch-up", "foreign", "source", "base", "remote source"} {
@@ -468,6 +477,7 @@ func TestAccountedForgeHeadCatchUpAtRewindIntegration(t *testing.T) {
 }
 
 func TestAccountedForgeHeadRewindAfterLeftoverCommit(t *testing.T) {
+	t.Parallel()
 	for _, strategy := range []string{config.RebaseStrategyRebase, config.RebaseStrategyMerge} {
 		for _, refreshAt := range []string{"integration", "completion"} {
 			t.Run(strategy+"/"+refreshAt, func(t *testing.T) {
@@ -519,6 +529,7 @@ func TestAccountedForgeHeadRewindAfterLeftoverCommit(t *testing.T) {
 }
 
 func TestAccountedForgeHeadCatchUpAfterSuccessfulPostRebaseGuard(t *testing.T) {
+	t.Parallel()
 	for _, observation := range []string{"pinned", "foreign"} {
 		t.Run(observation, func(t *testing.T) {
 			c, selected := accountedRewindFixture(t)
@@ -567,6 +578,7 @@ func TestAccountedForgeHeadCatchUpAfterSuccessfulPostRebaseGuard(t *testing.T) {
 }
 
 func TestAccountedForgeHeadCatchUpToIntermediateCorrectionAfterRebase(t *testing.T) {
+	t.Parallel()
 	c, selected := accountedRewindFixture(t)
 	original := c.Run.HeadSHA
 	gitCmd(t, c.WorkDir, "commit", "--allow-empty", "-m", "Review fix")
@@ -623,6 +635,7 @@ func TestAccountedForgeHeadCatchUpToIntermediateCorrectionAfterRebase(t *testing
 }
 
 func TestAccountedForgeHeadRefusedTransitionDoesNotPersistForgeObservation(t *testing.T) {
+	t.Parallel()
 	t.Run("core guard", func(t *testing.T) {
 		c, selected := rewindFixture(t)
 		selected.PRURL = "https://github.com/test/repo/pull/42"
@@ -669,6 +682,7 @@ func TestAccountedForgeHeadRefusedTransitionDoesNotPersistForgeObservation(t *te
 }
 
 func TestAccountedForgeHeadAccountingWritesNothingUntilAccepted(t *testing.T) {
+	t.Parallel()
 	c, selected := accountedRewindFixture(t)
 	before, err := c.DB.GetRunPRContext(c.Run.ID)
 	if err != nil {
@@ -695,6 +709,7 @@ func TestAccountedForgeHeadAccountingWritesNothingUntilAccepted(t *testing.T) {
 }
 
 func TestAccountedForgeHeadRefusedTargetTransitionLeavesReceiptAndPendingUnchanged(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"rewritten target", "exhausted budget"} {
 		t.Run(kind, func(t *testing.T) {
 			c, selected := accountedRewindFixture(t)
@@ -726,6 +741,7 @@ func TestAccountedForgeHeadRefusedTargetTransitionLeavesReceiptAndPendingUnchang
 }
 
 func TestAccountedForgeHeadCatchUpAfterRebaseAndSecondTargetAdvance(t *testing.T) {
+	t.Parallel()
 	c, selected := accountedRewindFixture(t)
 	original := c.Run.HeadSHA
 	advanceRewindTarget(t, c)
@@ -753,6 +769,7 @@ func TestAccountedForgeHeadCatchUpAfterRebaseAndSecondTargetAdvance(t *testing.T
 }
 
 func TestAccountedForgeHeadCorrectionWithRefusedTargetLeavesDurableStateUnchanged(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"exhausted budget", "rewritten target"} {
 		t.Run(kind, func(t *testing.T) {
 			c, selected := accountedRewindFixture(t)
@@ -794,6 +811,7 @@ func TestAccountedForgeHeadCorrectionWithRefusedTargetLeavesDurableStateUnchange
 }
 
 func TestAccountedForgeHeadCorrectionWithTargetAdvanceIsOneAcceptedTransition(t *testing.T) {
+	t.Parallel()
 	c, selected := accountedRewindFixture(t)
 	original := c.Run.HeadSHA
 	if err := os.WriteFile(filepath.Join(c.WorkDir, "review-fix.txt"), []byte("review correction\n"), 0600); err != nil {
