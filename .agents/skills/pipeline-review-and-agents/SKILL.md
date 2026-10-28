@@ -36,8 +36,7 @@ metadata:
 
 **Intended-Usage Evidence Threshold (`internal/pipeline/steps/review.go`)**
 
-- A review finding needs a concrete sequence that occurs during the change's intended usage. A rare but real sequence those callers actually perform still qualifies. A finding whose only supporting path is a hypothetical unused execution that intended callers, the public API, or documented usage never take does not. This is an evidence threshold, not a general "be less noisy" rewrite.
-- Docs owner: `docs/src/content/docs/reference/pipeline-steps.md`. Prompt regression: `TestReviewStep_IntendedUsageEvidenceContract`. Development-only qualitative cases: `internal/pipeline/steps/testdata/intended_usage_review/`.
+- The evidence threshold and its Coding standards exception are owned by [Review](../../../docs/src/content/docs/reference/pipeline-steps.md#review). Prompt regressions: `TestReviewStep_IntendedUsageEvidenceContract`, `TestReviewStep_CodingStandardsSectionContract`. Development-only qualitative cases: `internal/pipeline/steps/testdata/intended_usage_review/`.
 
 **Simplification Pass and Fix-Through-Removal (`internal/pipeline/steps/review.go`, `internal/pipeline/steps/common_fix.go`, `internal/pipeline/steps/lint.go`, `internal/pipeline/steps/ci_fix.go`)**
 
