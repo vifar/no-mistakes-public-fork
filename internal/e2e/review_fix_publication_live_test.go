@@ -308,9 +308,9 @@ func TestReviewFixLongSummaryLiveJourney(t *testing.T) {
 
 // The documented byte bound must reject a 4097-byte report even though the
 // Review subject could be shortened. The fixer edits before returning it, so
-// advancing the recorded head or publishing any repair violates the contract.
-// TestReviewStep_RejectsOversizedFixSummary checks worktree/index rollback
-// before the daemon's terminal cleanup removes the disposable checkout.
+// publishing any repair would violate the contract. The step-level
+// TestReviewStep_RejectsOversizedFixSummary checks rollback before terminal
+// daemon cleanup can remove the worktree.
 func TestReviewFixOversizedSummaryLiveJourney(t *testing.T) {
 	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: configurableFixCommitScenario(t, strings.Repeat("x", 4097))})
 	cfg := filepath.Join(h.NMHome, "config.yaml")
@@ -337,8 +337,6 @@ func TestReviewFixOversizedSummaryLiveJourney(t *testing.T) {
 	if run.Status != types.RunFailed || run.Error == nil || !strings.Contains(*run.Error, "commit summary must not exceed 4096 bytes") {
 		t.Fatalf("oversized report outcome = %s, error=%v", run.Status, deref(run.Error))
 	}
-	// Terminal cleanup can remove the checkout before WaitForRun returns.
-	// Check the durable outcome here; the step test checks rollback itself.
 	if run.HeadSHA != submitted {
 		t.Fatalf("rejected repair changed recorded HEAD: %s, want %s", run.HeadSHA, submitted)
 	}
