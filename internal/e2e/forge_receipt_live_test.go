@@ -107,11 +107,11 @@ func TestForgeReceiptReviewFixLive(t *testing.T) {
 }
 
 type forgeReceiptJourney struct {
-	t                                                       *testing.T
-	h                                                       *Harness
-	database                                                *db.DB
+	t                                                          *testing.T
+	h                                                          *Harness
+	database                                                   *db.DB
 	branch, base, forge, head, target, script, snapshot, state string
-	ownerBefore                                             *db.StepResult
+	ownerBefore                                                *db.StepResult
 }
 
 func newForgeReceiptJourney(t *testing.T, kind string) *forgeReceiptJourney {
