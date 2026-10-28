@@ -19,7 +19,8 @@ import (
 // GuardPRContext pins the exact target comparison before Rebase and checks it
 // at every later core-step boundary. A checked target advance rewinds ordinary
 // unpublished validation; a qualified non-strict published head retains its
-// receipt when still mergeable. Other external comparison changes fail closed.
+// receipt when still mergeable. Accounted forge-head observations may refresh
+// the receipt; other external comparison changes fail closed.
 // A step's own proven forward edit advances the receipt.
 func GuardPRContext(sctx *pipeline.StepContext, step types.StepName) (pipeline.PRContextDecision, error) {
 	if sctx != nil && sctx.PRContextAfterStep && step == types.StepPR &&
