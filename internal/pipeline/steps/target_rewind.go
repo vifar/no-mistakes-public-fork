@@ -27,7 +27,7 @@ type rewindObservation struct {
 // the caller re-reads the target and classifies the advance with the same
 // rules every other target-advance boundary uses.
 //
-// Every other comparison failure (a changed PR identity, a changed head, an
+// Every other comparison failure (a changed PR identity, an unaccounted head, an
 // unreadable receipt) keeps failing closed.
 var errTargetComparisonAdvanced = errors.New("live target comparison advanced")
 
