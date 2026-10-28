@@ -307,9 +307,9 @@ func refreshPRHeadBeforeRetarget(sctx *pipeline.StepContext, reader scm.PRFactsR
 	return refreshed, nil
 }
 
-// runAccountsForPRHead reports whether a forge head that differs from the
-// local head is one this run explains: its own durable last push, or a head
-// the local head already contains (its later push fast-forwards the PR).
+// runAccountsForPRHead checks against the supplied accepted local head, which
+// may be a retained pre-rewrite head. Accounting for the forge observation
+// does not establish that a later publication will be a fast-forward.
 func runAccountsForPRHead(sctx *pipeline.StepContext, forgeHead, localHead string) (bool, error) {
 	if forgeHead == "" {
 		return false, nil
