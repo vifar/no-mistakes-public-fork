@@ -77,9 +77,12 @@ lock when its holder exits, including on a crash.
 
 On a returned init error, provisioning metadata in an existing gate is restored
 to its prior bytes and file permissions. This includes preserved custom admission
-hooks; gate objects, refs and linked-worktree administration are never rolled
-back. Unsupported metadata file types are refused before provisioning. A rollback
-error is reported with the original failure, not treated as successful cleanup.
+hooks and symlink entries. Symlinked hooks directories remain supported, and
+config symlink targets written by Git are included in restoration. Untouched
+opaque entries retain their identity; custom-hook targets are not rewritten by
+rollback. Gate objects, refs and linked-worktree administration are never rolled
+back. A rollback error is reported with the original failure, not treated as
+successful cleanup.
 This is error-path restoration, not crash recovery.
 
 Enrollment keeps the working checkout non-bare. Re-initializing a

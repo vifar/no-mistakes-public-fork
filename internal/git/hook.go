@@ -136,7 +136,7 @@ func RefreshManagedPreReceiveHook(bareDir string) (bool, error) {
 			return false, nil
 		}
 		if !isManagedPreReceiveHook(existing) {
-			if _, companionErr := os.Stat(companion); companionErr == nil {
+			if _, companionErr := os.Lstat(companion); companionErr == nil {
 				return false, fmt.Errorf("preserve pre-receive hook: companion already exists")
 			} else if !os.IsNotExist(companionErr) {
 				return false, companionErr
@@ -308,6 +308,13 @@ func writeHookFileAtomic(path string, content []byte) error {
 }
 
 func writeGateFileAtomic(path string, content []byte, mode os.FileMode, pattern string) error {
+	if info, err := os.Lstat(path); err == nil {
+		if !info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 {
+			return fmt.Errorf("refuse to replace opaque gate metadata: %s", path)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, pattern)
 	if err != nil {

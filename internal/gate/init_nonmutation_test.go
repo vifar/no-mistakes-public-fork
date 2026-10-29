@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -126,34 +127,267 @@ func TestInitComponentProvisionFailurePreservesGate(t *testing.T) {
 	}
 }
 
-func TestInitComponentUnsafeMetadataFailsBeforeMutation(t *testing.T) {
-	ctx := context.Background()
-	p, d := newInitFixture(t)
-	work := setupTestRepo(t)
-	gateDir := p.RepoDir(repoID(work))
-	initBareAt(t, gateDir)
-	if err := gitpkg.AddRemote(ctx, work, RemoteName, gateDir); err != nil {
-		t.Fatal(err)
-	}
-	external := filepath.Join(t.TempDir(), "external-hook")
-	data := []byte("#!/bin/sh\nexit 3\n")
-	if err := os.WriteFile(external, data, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(external, filepath.Join(gateDir, "hooks", "pre-receive")); err != nil {
-		t.Fatal(err)
-	}
-	before := treeSnapshot(t, gateDir)
-	if _, _, err := Init(ctx, d, p, work); err == nil || !strings.Contains(err.Error(), "regular file") {
-		t.Fatalf("unsafe metadata not refused: %v", err)
-	}
-	compareSnapshots(t, "symlink refusal", before, treeSnapshot(t, gateDir))
-	after, err := os.ReadFile(external)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(data, after) {
-		t.Fatal("external target changed")
+func TestInitComponentSymlinkMetadata(t *testing.T) {
+	for _, layout := range []string{"custom-post", "custom-hooks", "hooks-directory", "managed-hooks", "config", "config-chain", "dangling-config", "markers", "opaque-companion", "dangling-companion"} {
+		for _, kind := range []string{"adopt", "refresh"} {
+			for _, refuse := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/refuse=%v", layout, kind, refuse), func(t *testing.T) {
+					ctx := context.Background()
+					p, d := newInitFixture(t)
+					work := setupTestRepo(t)
+					gateDir := p.RepoDir(repoID(work))
+					if kind == "refresh" {
+						if _, _, err := Init(ctx, d, p, work); err != nil {
+							t.Fatal(err)
+						}
+					} else {
+						initBareAt(t, gateDir)
+						if err := gitpkg.AddRemote(ctx, work, RemoteName, gateDir); err != nil {
+							t.Fatal(err)
+						}
+					}
+					commit, linked := seedGateSentinel(t, gateDir)
+					previousRepo, err := d.GetRepoByPath(work)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var previousRun *db.Run
+					if previousRepo != nil {
+						run, err := d.InsertRun(previousRepo.ID, "sentinel", commit, commit)
+						if err != nil {
+							t.Fatal(err)
+						}
+						previousRun, err = d.GetRun(run.ID)
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
+					targets := resolveSymlinks(t, t.TempDir())
+					protected := make(map[string][]byte)
+					links := make(map[string]string)
+					link := func(name string, data []byte, dangling, protect bool) {
+						t.Helper()
+						path := filepath.Join(gateDir, name)
+						target := filepath.Join(targets, fmt.Sprintf("target-%d", len(links)))
+						if !dangling {
+							if err := os.WriteFile(target, data, 0o751); err != nil {
+								t.Fatal(err)
+							}
+							if protect {
+								protected[target] = data
+							}
+						}
+						if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+							t.Fatal(err)
+						}
+						parent, err := filepath.EvalSymlinks(filepath.Dir(path))
+						if err != nil {
+							t.Fatal(err)
+						}
+						text, err := filepath.Rel(parent, target)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if err := os.Symlink(text, path); err != nil {
+							t.Fatal(err)
+						}
+						if !dangling {
+							got, err := os.ReadFile(path)
+							if err != nil || !bytes.Equal(data, got) {
+								t.Fatalf("invalid symlink fixture: %s %v", path, err)
+							}
+						}
+						links[name] = text
+					}
+					var retainedPath string
+					switch layout {
+					case "custom-post":
+						link("hooks/post-receive", []byte("#!/bin/sh\nexit 4\n"), false, true)
+						retainedPath = filepath.Join(gateDir, "hooks/post-receive")
+					case "hooks-directory":
+						hooks := filepath.Join(gateDir, "hooks")
+						target := filepath.Join(targets, "hook directory")
+						if err := os.Rename(hooks, target); err != nil {
+							t.Fatal(err)
+						}
+						text, err := filepath.Rel(resolveSymlinks(t, gateDir), target)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if err := os.Symlink(text, hooks); err != nil {
+							t.Fatal(err)
+						}
+						links["hooks"] = text
+						retainedPath = hooks
+						fallthrough
+					case "custom-hooks":
+						link("hooks/pre-receive", []byte("#!/bin/sh\nexit 3\n"), false, true)
+						link("hooks/post-receive", []byte("#!/bin/sh\nexit 4\n"), false, true)
+						if retainedPath == "" {
+							retainedPath = filepath.Join(gateDir, "hooks/post-receive")
+						}
+					case "managed-hooks":
+						link("hooks/pre-receive", []byte("#!/bin/sh\n# no-mistakes pre-receive hook\n# daemon admit-push\nexit 0\n"), false, true)
+						link("hooks/post-receive", []byte("#!/bin/sh\n# no-mistakes post-receive hook\n# daemon notify-push\nexit 0\n"), false, true)
+					case "config", "config-chain":
+						for _, name := range []string{"config", "config.worktree"} {
+							data, err := os.ReadFile(filepath.Join(gateDir, name))
+							if os.IsNotExist(err) {
+								data = []byte("[test]\n  value = original\n")
+							} else if err != nil {
+								t.Fatal(err)
+							}
+							link(name, data, false, false)
+							if layout == "config-chain" {
+								path := filepath.Join(gateDir, name)
+								leaf := filepath.Clean(filepath.Join(filepath.Dir(path), links[name]))
+								hop := leaf + "-hop"
+								if err := os.Symlink(leaf, hop); err != nil {
+									t.Fatal(err)
+								}
+								if err := os.Remove(path); err != nil {
+									t.Fatal(err)
+								}
+								if err := os.Symlink(hop, path); err != nil {
+									t.Fatal(err)
+								}
+								links[name] = hop
+							}
+						}
+					case "dangling-config":
+						link("config.worktree", nil, true, false)
+						if _, err := gitpkg.RunBare(ctx, gateDir, "config", "--local", "core.bare", "true"); err != nil {
+							t.Fatal(err)
+						}
+					case "markers":
+						link("no-mistakes-gate-config", []byte("old stamp\n"), false, true)
+						link("no-mistakes-shared-config.json", []byte("{}\n"), false, true)
+					case "opaque-companion", "dangling-companion":
+						script, err := gitpkg.PreReceiveHookScript(gateDir)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if err := os.WriteFile(filepath.Join(gateDir, "hooks/pre-receive"), []byte(script), 0o755); err != nil {
+							t.Fatal(err)
+						}
+						retainedPath = filepath.Join(gateDir, "hooks/pre-receive.no-mistakes-user")
+						if layout == "opaque-companion" {
+							if err := os.Mkdir(retainedPath, 0o751); err != nil {
+								t.Fatal(err)
+							}
+							if err := os.WriteFile(filepath.Join(retainedPath, "unowned"), []byte("retain"), 0o600); err != nil {
+								t.Fatal(err)
+							}
+						} else {
+							link("hooks/pre-receive.no-mistakes-user", nil, true, true)
+						}
+					}
+					var retained os.FileInfo
+					if retainedPath != "" {
+						var err error
+						retained, err = os.Lstat(retainedPath)
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
+					var originalPreReceive os.FileInfo
+					if layout == "custom-hooks" || layout == "hooks-directory" {
+						var err error
+						originalPreReceive, err = os.Lstat(filepath.Join(gateDir, "hooks/pre-receive"))
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
+					before, externalBefore := treeSnapshot(t, gateDir), treeSnapshot(t, targets)
+					raw, err := sql.Open("sqlite", p.DB())
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer func() {
+						if err := raw.Close(); err != nil {
+							t.Error(err)
+						}
+					}()
+					if refuse {
+						event := "INSERT"
+						if kind == "refresh" {
+							event = "UPDATE"
+						}
+						if _, err := raw.Exec("CREATE TRIGGER refuse_link_init BEFORE " + event + " ON repos BEGIN SELECT RAISE(ABORT, 'symlink SQLite refusal'); END"); err != nil {
+							t.Fatal(err)
+						}
+					}
+					_, created, err := Init(ctx, d, p, work)
+					if refuse {
+						if err == nil || !strings.Contains(err.Error(), "symlink SQLite refusal") {
+							t.Fatalf("supported layout failed before SQLite: %v", err)
+						}
+						compareSnapshots(t, "symlink gate rollback", before, treeSnapshot(t, gateDir))
+						compareSnapshots(t, "symlink target rollback", externalBefore, treeSnapshot(t, targets))
+					} else if err != nil || created {
+						t.Fatalf("supported layout was not enrolled: created=%v err=%v", created, err)
+					}
+					if originalPreReceive != nil {
+						name := "hooks/pre-receive"
+						if !refuse {
+							name += ".no-mistakes-user"
+						}
+						info, err := os.Lstat(filepath.Join(gateDir, name))
+						if err != nil || !os.SameFile(originalPreReceive, info) {
+							t.Fatalf("custom pre-receive entry lost its identity: %v", err)
+						}
+					}
+					for path, data := range protected {
+						after, err := os.ReadFile(path)
+						if err != nil || !bytes.Equal(data, after) {
+							t.Fatalf("custom target changed at %s: %q %v", path, after, err)
+						}
+					}
+					if retained != nil {
+						after, err := os.Lstat(retainedPath)
+						if err != nil || !os.SameFile(retained, after) {
+							t.Fatalf("untouched entry identity changed: %s %v", retainedPath, err)
+						}
+					}
+					if !refuse {
+						for name, text := range links {
+							switch layout {
+							case "managed-hooks", "markers":
+								info, err := os.Lstat(filepath.Join(gateDir, name))
+								if err != nil || !info.Mode().IsRegular() {
+									t.Fatalf("managed entry was not refreshed: %s %v", name, err)
+								}
+								continue
+							case "custom-hooks", "hooks-directory":
+								if name == "hooks/pre-receive" {
+									name += ".no-mistakes-user"
+								}
+							}
+							got, err := os.Readlink(filepath.Join(gateDir, name))
+							if err != nil || got != text {
+								t.Fatalf("link text changed at %s: %q %v", name, got, err)
+							}
+						}
+					}
+					if previousRepo != nil {
+						got, err := d.GetRepo(previousRepo.ID)
+						if err != nil || !reflect.DeepEqual(got, previousRepo) {
+							t.Fatalf("registration changed: %+v %v", got, err)
+						}
+						gotRun, err := d.GetRun(previousRun.ID)
+						if err != nil || !reflect.DeepEqual(gotRun, previousRun) {
+							t.Fatalf("seeded run changed: %+v %v", gotRun, err)
+						}
+					} else {
+						got, err := d.GetRepoByPath(work)
+						if err != nil || (refuse && got != nil) || (!refuse && (got == nil || got.ID != repoID(work))) {
+							t.Fatalf("wrong adoption registration: %+v %v", got, err)
+						}
+					}
+					assertGateWorktreeUsable(t, linked, commit)
+				})
+			}
+		}
 	}
 }
 
@@ -563,4 +797,27 @@ func TestInitComponentRemoteConfigReadFailures(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestInitComponentOccupiedDanglingCompanion(t *testing.T) {
+	ctx := context.Background()
+	p, d := newInitFixture(t)
+	work := setupTestRepo(t)
+	bare := p.RepoDir(repoID(work))
+	initBareAt(t, bare)
+	if err := gitpkg.AddRemote(ctx, work, RemoteName, bare); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bare, "hooks/pre-receive"), []byte("#!/bin/sh\nexit 4\n"), 0o751); err != nil {
+		t.Fatal(err)
+	}
+	companion := filepath.Join(bare, "hooks/pre-receive.no-mistakes-user")
+	if err := os.Symlink("missing-user-hook", companion); err != nil {
+		t.Fatal(err)
+	}
+	before := treeSnapshot(t, bare)
+	if _, _, err := Init(ctx, d, p, work); err == nil || !strings.Contains(err.Error(), "companion already exists") {
+		t.Fatalf("occupied companion was overwritten: %v", err)
+	}
+	compareSnapshots(t, "occupied dangling companion", before, treeSnapshot(t, bare))
 }
