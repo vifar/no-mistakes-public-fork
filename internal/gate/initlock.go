@@ -10,15 +10,16 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
 
-// initLockWait bounds how long an init (or eject) waits for another one to
-// finish before giving up. It is a variable so a test can shorten it.
+// initLockWait bounds how long init, eject, or startup gate migration waits
+// for ownership before giving up. It is a variable so a test can shorten it.
 var initLockWait = 2 * time.Minute
 
-// initLockPoll is how often a waiting init retries the lock.
+// initLockPoll is how often a waiting ownership operation retries the lock.
 const initLockPoll = 25 * time.Millisecond
 
-// initLockPath is the lock every init and eject of this no-mistakes root
-// holds while it decides who owns a repo ID and acts on that decision.
+// initLockPath is shared by init, eject, and startup gate migration for this
+// no-mistakes root so ownership decisions and metadata rollback cannot overlap
+// another cooperating writer's changes.
 func initLockPath(p *paths.Paths) string {
 	return filepath.Join(p.Root(), "init.lock")
 }
@@ -32,7 +33,10 @@ func initLockPath(p *paths.Paths) string {
 // interleaving with them could see the same ID as free, or remove a gate the
 // other one has just registered (issue #160). The lock makes the whole
 // sequence one exclusive decision: it is held from the first registry read
-// until the attempt has registered or rolled back.
+// until the attempt has registered or rolled back. Startup gate migration
+// holds the same lock from candidate discovery through the full migration pass,
+// preventing init rollback from undoing a completed migration. Callers acquire
+// it once around the operation, not again inside individual metadata writers.
 //
 // The lock is an OS file lock, so it is released when the holder exits, even
 // on a crash.

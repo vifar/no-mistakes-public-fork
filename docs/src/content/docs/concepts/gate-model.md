@@ -60,7 +60,7 @@ away only if it is no longer needed, then retry. A provisioning or registration
 failure removes only a gate directory created by that attempt and still
 unowned in the registry; a pre-existing directory is retained. Rollback restores
 the caller's gate remote only if it changed, preserving literal URL values,
-including aliases.
+including aliases and the absence of URL values on a configured remote.
 
 If daemon startup fails after gate setup, `init` reports the error and ejects
 the gate only if this invocation created its directory. A refreshed or adopted
@@ -72,12 +72,14 @@ and metadata writes with the same OS file lock at
 or rollback. Startup migration takes it before discovering or inspecting gates
 and releases it after the migration pass; alternate spellings of the same
 root reach the same physical lock file. A competing operation waits up to two
-minutes, then reports the lock path and asks you to retry after the holder finishes. The OS releases the
-lock when its holder exits, including on a crash.
+minutes. If that wait expires, `init` or `eject` reports the lock path
+and asks you to retry after the holder finishes. Startup migration instead logs
+a warning and skips its migration pass if it cannot acquire the lock. The OS
+releases the lock when its holder exits, including on a crash.
 
-On a returned init error, provisioning metadata in an existing gate is restored
-to its prior bytes and file permissions. This includes preserved custom admission
-hooks and symlink entries. Symlinked hooks directories remain supported, and
+If provisioning or registration returns an error, metadata in an existing gate
+is restored to its prior bytes and file permissions. This includes preserved
+custom admission hooks and symlink entries. Symlinked hooks directories remain supported, and
 config symlink targets written by Git are included in restoration. Untouched
 opaque entries retain their identity; custom-hook targets are not rewritten by
 rollback. Gate objects, refs and linked-worktree administration are never rolled

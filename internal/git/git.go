@@ -583,6 +583,8 @@ func GetConfiguredRemoteURL(ctx context.Context, dir, name string) (string, erro
 }
 
 // GetConfiguredRemoteURLs returns every literal URL configured for a remote.
+// A missing URL key returns no values and no error; other config read failures
+// are returned. Use HasRemote to distinguish a URL-less remote from no remote.
 // Callers that require an authoritative source can reject zero or multiple
 // values rather than letting git silently select one.
 func GetConfiguredRemoteURLs(ctx context.Context, dir, name string) ([]string, error) {
