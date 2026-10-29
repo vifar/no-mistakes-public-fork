@@ -66,10 +66,13 @@ If daemon startup fails after gate setup, `init` reports the error and ejects
 the gate only if this invocation created its directory. A refreshed or adopted
 pre-existing gate stays registered and is not ejected.
 
-`init` and `eject` serialize ownership changes with an OS file lock at
+`init`, `eject`, and daemon startup gate migration serialize ownership changes
+and metadata writes with the same OS file lock at
 `<NM_HOME>/init.lock`, held from the first registration lookup through completion
-or rollback. A competing operation waits up to two minutes, then reports the
-lock path and asks you to retry after the holder finishes. The OS releases the
+or rollback. Startup migration takes it before discovering or inspecting gates
+and releases it after the migration pass; alternate spellings of the same
+root reach the same physical lock file. A competing operation waits up to two
+minutes, then reports the lock path and asks you to retry after the holder finishes. The OS releases the
 lock when its holder exits, including on a crash.
 
 On a returned init error, provisioning metadata in an existing gate is restored

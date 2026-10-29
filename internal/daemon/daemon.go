@@ -20,6 +20,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -1128,6 +1129,13 @@ var sweepRunWorktrees = procreap.SweepRunWorktrees
 // filesystem-only pass instead of six Git subprocesses per gate.
 func migrateGateConfigs(ctx context.Context, d *db.DB, p *paths.Paths) gateMigrationStats {
 	var stats gateMigrationStats
+	unlock, err := gate.AcquireInitLock(ctx, p)
+	if err != nil {
+		slog.Warn("acquire gate migration ownership lock failed", "error", err)
+		stats.Failed++
+		return stats
+	}
+	defer unlock()
 	candidates := make(map[string]struct{})
 	reposDir := filepath.Clean(p.ReposDir())
 

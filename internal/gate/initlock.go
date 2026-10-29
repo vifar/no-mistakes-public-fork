@@ -23,7 +23,7 @@ func initLockPath(p *paths.Paths) string {
 	return filepath.Join(p.Root(), "init.lock")
 }
 
-// acquireInitLock takes the exclusive init lock of a no-mistakes root.
+// AcquireInitLock takes the exclusive init lock of a no-mistakes root.
 //
 // The repo ID a checkout derives names a gate directory that is shared by
 // everything its registration owns. Deciding that an ID is free, creating its
@@ -36,7 +36,7 @@ func initLockPath(p *paths.Paths) string {
 //
 // The lock is an OS file lock, so it is released when the holder exits, even
 // on a crash.
-func acquireInitLock(ctx context.Context, p *paths.Paths) (func(), error) {
+func AcquireInitLock(ctx context.Context, p *paths.Paths) (func(), error) {
 	path := initLockPath(p)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("create init lock directory: %w", err)

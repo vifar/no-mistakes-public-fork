@@ -431,3 +431,136 @@ func TestInitComponentRollbackFailureIsReported(t *testing.T) {
 		t.Fatal("conflicting writer data lost")
 	}
 }
+
+func TestInitComponentFetchOnlyRemote(t *testing.T) {
+	for _, refuse := range []bool{false, true} {
+		t.Run(fmt.Sprint(refuse), func(t *testing.T) {
+			ctx := context.Background()
+			p, d := newInitFixture(t)
+			work := setupTestRepo(t)
+			repo, _, err := Init(ctx, d, p, work)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := gitpkg.Run(ctx, work, "config", "--unset-all", "remote."+RemoteName+".url"); err != nil {
+				t.Fatal(err)
+			}
+			configPath := filepath.Join(work, ".git", "config")
+			before, err := os.ReadFile(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gateBefore := treeSnapshot(t, p.RepoDir(repo.ID))
+			if refuse {
+				raw, err := sql.Open("sqlite", p.DB())
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, writeErr := raw.Exec("CREATE TRIGGER refuse_url_refresh BEFORE UPDATE ON repos BEGIN SELECT RAISE(ABORT, 'URL refresh refusal'); END")
+				if err := errors.Join(writeErr, raw.Close()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, created, err := Init(ctx, d, p, work)
+			if created {
+				t.Fatal("refresh claimed creation")
+			}
+			if refuse {
+				if err == nil || !strings.Contains(err.Error(), "URL refresh refusal") {
+					t.Fatalf("wrong refusal: %v", err)
+				}
+				after, err := os.ReadFile(configPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(before, after) {
+					t.Fatalf("fetch-only remote config changed:\n%s", after)
+				}
+				compareSnapshots(t, "fetch-only refresh rollback", gateBefore, treeSnapshot(t, p.RepoDir(repo.ID)))
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				url, err := gitpkg.GetConfiguredRemoteURL(ctx, work, RemoteName)
+				if err != nil || url != p.RepoDir(repo.ID) {
+					t.Fatalf("fetch-only remote was not repaired: %q %v", url, err)
+				}
+			}
+		})
+	}
+}
+
+func TestInitComponentRemoteRollbackURLStates(t *testing.T) {
+	for _, priorURLs := range [][]string{nil, {""}, {"literal:first", "literal:second"}} {
+		for _, currentURLs := range [][]string{nil, {"literal:changed"}} {
+			t.Run(fmt.Sprintf("%q-to-%q", currentURLs, priorURLs), func(t *testing.T) {
+				ctx := context.Background()
+				work := setupTestRepo(t)
+				key := "remote." + RemoteName
+				if _, err := gitpkg.Run(ctx, work, "config", key+".fetch", "+refs/heads/*:refs/remotes/no-mistakes/*"); err != nil {
+					t.Fatal(err)
+				}
+				for _, url := range currentURLs {
+					if _, err := gitpkg.Run(ctx, work, "config", "--add", key+".url", url); err != nil {
+						t.Fatal(err)
+					}
+				}
+				prior := remoteState{present: true, urls: priorURLs}
+				if err := rollbackWorkingRemote(ctx, work, prior); err != nil {
+					t.Fatal(err)
+				}
+				has, err := gitpkg.HasRemote(ctx, work, RemoteName)
+				if err != nil || !has {
+					t.Fatalf("lost remote: %v %v", has, err)
+				}
+				raw, err := gitpkg.RunRaw(ctx, work, "config", "--null", "--get-all", key+".url")
+				if len(priorURLs) == 0 {
+					if code, ok := gitpkg.ExitCode(err); !ok || code != 1 || len(raw) != 0 {
+						t.Fatalf("URL key should be absent: %q %v", raw, err)
+					}
+				} else if err != nil || string(raw) != strings.Join(priorURLs, "\x00")+"\x00" {
+					t.Fatalf("wrong literal URLs: %q %v", raw, err)
+				}
+				fetch, err := gitpkg.Run(ctx, work, "config", "--get", key+".fetch")
+				if err != nil || fetch != "+refs/heads/*:refs/remotes/no-mistakes/*" {
+					t.Fatalf("fetch configuration changed: %q %v", fetch, err)
+				}
+			})
+		}
+	}
+}
+
+func TestInitComponentRemoteConfigReadFailures(t *testing.T) {
+	for _, broken := range []string{"corrupt", "unreadable", "cancelled"} {
+		t.Run(broken, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			work := setupTestRepo(t)
+			config := filepath.Join(work, ".git", "config")
+			if broken == "corrupt" {
+				if err := os.WriteFile(config, []byte("[broken\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			} else if broken == "unreadable" {
+				if err := os.Remove(config); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(config, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if broken == "cancelled" {
+				cancel()
+			}
+			if urls, err := gitpkg.GetConfiguredRemoteURLs(ctx, work, RemoteName); err == nil {
+				t.Fatalf("actual config read error became URLs: %q", urls)
+			}
+			if _, err := snapshotWorkingRemote(ctx, work); err == nil {
+				t.Fatal("snapshot accepted broken config")
+			}
+			if err := rollbackWorkingRemote(ctx, work, remoteState{present: true}); err == nil {
+				t.Fatal("rollback accepted broken config")
+			}
+		})
+	}
+}

@@ -672,7 +672,7 @@ func TestInitWaitsForTheInitLock(t *testing.T) {
 	work := setupTestRepo(t)
 	gateDir := p.RepoDir(repoID(work))
 
-	unlock, err := acquireInitLock(ctx, p)
+	unlock, err := AcquireInitLock(ctx, p)
 	if err != nil {
 		t.Fatalf("take init lock: %v", err)
 	}
@@ -708,7 +708,7 @@ func TestInitGivesUpOnAHeldInitLock(t *testing.T) {
 	initLockWait = 100 * time.Millisecond
 	t.Cleanup(func() { initLockWait = oldWait })
 
-	unlock, err := acquireInitLock(ctx, p)
+	unlock, err := AcquireInitLock(ctx, p)
 	if err != nil {
 		t.Fatalf("take init lock: %v", err)
 	}

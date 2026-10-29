@@ -588,6 +588,12 @@ func GetConfiguredRemoteURL(ctx context.Context, dir, name string) (string, erro
 func GetConfiguredRemoteURLs(ctx context.Context, dir, name string) ([]string, error) {
 	out, err := Run(ctx, dir, "config", "--null", "--get-all", "remote."+name+".url")
 	if err != nil {
+		var commandErr *CommandError
+		if errors.As(err, &commandErr) && commandErr.Stderr == "" {
+			if exit, ok := commandErr.Err.(*exec.ExitError); ok && exit.ExitCode() == 1 {
+				return nil, nil
+			}
+		}
 		return nil, err
 	}
 	return strings.Split(strings.TrimSuffix(out, "\x00"), "\x00"), nil

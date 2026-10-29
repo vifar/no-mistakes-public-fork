@@ -139,7 +139,7 @@ func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkUR
 	// Hold the init lock from the first registry read until this attempt has
 	// registered or rolled back, so the ownership decided below cannot change
 	// under it (issue #160).
-	unlock, err := acquireInitLock(ctx, p)
+	unlock, err := AcquireInitLock(ctx, p)
 	if err != nil {
 		return nil, false, err
 	}
@@ -415,7 +415,7 @@ func rollbackWorkingRemote(ctx context.Context, absRoot string, prior remoteStat
 		return git.RemoveRemote(ctx, absRoot, RemoteName)
 	}
 	key := "remote." + RemoteName + ".url"
-	if now.present {
+	if len(now.urls) > 0 {
 		if _, err := git.Run(ctx, absRoot, "config", "--unset-all", key); err != nil {
 			return err
 		}
@@ -602,7 +602,7 @@ func Eject(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.R
 
 	// Eject removes a gate directory, so it takes the init lock: an init
 	// deciding who owns a repo ID must not see the gate vanish under it.
-	unlock, err := acquireInitLock(ctx, p)
+	unlock, err := AcquireInitLock(ctx, p)
 	if err != nil {
 		return nil, err
 	}
