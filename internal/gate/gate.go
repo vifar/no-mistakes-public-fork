@@ -3,11 +3,13 @@ package gate
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
@@ -118,7 +120,7 @@ func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Re
 // InitWithFork is Init plus an optional GitHub fork push URL. The origin remote
 // remains the parent repository used for PRs. When forkURL is empty, an
 // existing fork setting is preserved across idempotent refreshes.
-func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkURL string) (*db.Repo, bool, error) {
+func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkURL string) (_ *db.Repo, _ bool, initErr error) {
 	if classified, err := (gatecontext.Inspector{DB: d, Paths: p}).Inspect(ctx, gatecontext.Request{CWD: workDir, MarkerPresent: gatecontext.MarkerPresent()}); err != nil {
 		return nil, false, err
 	} else if classified.Nested {
@@ -248,9 +250,42 @@ func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkUR
 	// The gate remote of the working repo is restored to what it was when
 	// this attempt fails, so a failed init leaves the caller's checkout as
 	// it found it.
-	priorRemote := snapshotWorkingRemote(ctx, absRoot)
+	priorRemote, err := snapshotWorkingRemote(ctx, absRoot)
+	if err != nil {
+		return nil, false, fmt.Errorf("snapshot checkout remote: %w", err)
+	}
+
+	// Existing gates are validated without mutation. Keep a journal of only
+	// the metadata configureGate owns; never snapshot/restore objects, refs,
+	// or worktree administration that other gate users may still be writing.
+	provision := provisionGate
+	if gatePresent {
+		if err := git.ValidateBareRepository(ctx, bareDir); err != nil {
+			return nil, false, err
+		}
+		metadata, err := snapshotInitMetadata(bareDir)
+		if err != nil {
+			return nil, false, fmt.Errorf("snapshot gate metadata: %w", err)
+		}
+		defer func() {
+			if initErr != nil {
+				initErr = errors.Join(initErr, metadata.restore())
+			}
+		}()
+		provision = configureGate
+	}
 
 	gateDirCreated := false
+	defer func() {
+		if initErr == nil {
+			return
+		}
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		initErr = errors.Join(initErr,
+			rollbackWorkingRemote(cleanupCtx, absRoot, priorRemote),
+			rollbackGate(d, bareDir, id, gateDirCreated))
+	}()
 	if !gatePresent {
 		// Create the directory here, exclusively, so "this attempt created
 		// it" is a fact rather than an inference.
@@ -264,9 +299,7 @@ func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkUR
 	}
 
 	// Provision (or repair) the on-disk gate. This is idempotent.
-	if err := provisionGate(ctx, bareDir, absRoot, upstreamURL, p.ReposDir(), existing != nil); err != nil {
-		rollbackWorkingRemote(ctx, absRoot, priorRemote)
-		rollbackGate(d, bareDir, id, gateDirCreated)
+	if err := provision(ctx, bareDir, absRoot, upstreamURL, p.ReposDir(), existing != nil); err != nil {
 		return nil, false, err
 	}
 
@@ -291,8 +324,6 @@ func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkUR
 	repo, err := insertRepoRecord(d, id, absRoot, redactedUpstreamURL, forkURL, branch)
 	if err != nil {
 		// Rollback: undo what this attempt added, and nothing else.
-		rollbackWorkingRemote(ctx, absRoot, priorRemote)
-		rollbackGate(d, bareDir, id, gateDirCreated)
 		return nil, false, fmt.Errorf("insert repo: %w", err)
 	}
 
@@ -331,15 +362,12 @@ func remotePointsAt(ctx context.Context, absRoot, bareDir string) bool {
 // whether it exists and the url values written in its config, exactly as
 // written (url.*.insteadOf is NOT applied, so an alias stays an alias).
 type remoteState struct {
-	// known is false when the state could not be read; a rollback then
-	// leaves the remote alone rather than "restore" a state it never saw.
-	known   bool
 	present bool
 	urls    []string
 }
 
 func (s remoteState) equal(o remoteState) bool {
-	if s.known != o.known || s.present != o.present || len(s.urls) != len(o.urls) {
+	if s.present != o.present || len(s.urls) != len(o.urls) {
 		return false
 	}
 	for i := range s.urls {
@@ -352,18 +380,19 @@ func (s remoteState) equal(o remoteState) bool {
 
 // snapshotWorkingRemote reads the literal state of a working repo's gate
 // remote.
-func snapshotWorkingRemote(ctx context.Context, absRoot string) remoteState {
+func snapshotWorkingRemote(ctx context.Context, absRoot string) (remoteState, error) {
 	has, err := git.HasRemote(ctx, absRoot, RemoteName)
 	if err != nil {
-		return remoteState{}
+		return remoteState{}, err
 	}
 	if !has {
-		return remoteState{known: true}
+		return remoteState{}, nil
 	}
-	// A remote with no url key reads as an error here; it is still a
-	// remote, with no urls.
-	urls, _ := git.GetConfiguredRemoteURLs(ctx, absRoot, RemoteName)
-	return remoteState{known: true, present: true, urls: urls}
+	urls, err := git.GetConfiguredRemoteURLs(ctx, absRoot, RemoteName)
+	if err != nil {
+		return remoteState{}, err
+	}
+	return remoteState{present: true, urls: urls}, nil
 }
 
 // rollbackWorkingRemote returns the gate remote of a working repo to the
@@ -374,24 +403,29 @@ func snapshotWorkingRemote(ctx context.Context, absRoot string) remoteState {
 //
 // The remote is part of the caller's checkout, not of the gate, and a failed
 // init has no business leaving a checkout wired to a gate that is not there.
-func rollbackWorkingRemote(ctx context.Context, absRoot string, prior remoteState) {
-	if !prior.known {
-		return
+func rollbackWorkingRemote(ctx context.Context, absRoot string, prior remoteState) error {
+	now, err := snapshotWorkingRemote(ctx, absRoot)
+	if err != nil {
+		return fmt.Errorf("inspect checkout remote during rollback: %w", err)
 	}
-	now := snapshotWorkingRemote(ctx, absRoot)
-	if !now.known || now.equal(prior) {
-		return
+	if now.equal(prior) {
+		return nil
 	}
 	if !prior.present {
-		// This attempt added the remote; take it away again.
-		_ = git.RemoveRemote(ctx, absRoot, RemoteName)
-		return
+		return git.RemoveRemote(ctx, absRoot, RemoteName)
 	}
 	key := "remote." + RemoteName + ".url"
-	_, _ = git.Run(ctx, absRoot, "config", "--unset-all", key)
-	for _, url := range prior.urls {
-		_, _ = git.Run(ctx, absRoot, "config", "--add", key, url)
+	if now.present {
+		if _, err := git.Run(ctx, absRoot, "config", "--unset-all", key); err != nil {
+			return err
+		}
 	}
+	for _, url := range prior.urls {
+		if _, err := git.Run(ctx, absRoot, "config", "--add", key, url); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // rollbackGate removes the gate directory of a failed init - but only when
@@ -408,18 +442,18 @@ func rollbackWorkingRemote(ctx context.Context, absRoot string, prior remoteStat
 // owns the ID owns its gate, however it got there, and an unreadable registry
 // leaves the directory alone as well - an owner that cannot be ruled out is
 // an owner that must not be destroyed.
-func rollbackGate(d *db.DB, bareDir, id string, created bool) {
+func rollbackGate(d *db.DB, bareDir, id string, created bool) error {
 	if !created {
-		return
+		return nil
 	}
 	owner, err := d.GetRepo(id)
 	if err != nil {
-		return
+		return fmt.Errorf("check gate owner during rollback: %w", err)
 	}
 	if owner != nil {
-		return
+		return nil
 	}
-	os.RemoveAll(bareDir)
+	return os.RemoveAll(bareDir)
 }
 
 func validateForkRouting(ctx context.Context, upstreamURL, forkURL string) error {
@@ -443,6 +477,11 @@ func provisionGate(ctx context.Context, bareDir, absRoot, upstreamURL, reposDir 
 	if err := git.InitBare(ctx, bareDir); err != nil {
 		return fmt.Errorf("create bare repo: %w", err)
 	}
+	return configureGate(ctx, bareDir, absRoot, upstreamURL, reposDir, refresh)
+}
+
+// configureGate receives a validated bare gate from init or provisionGate.
+func configureGate(ctx context.Context, bareDir, absRoot, upstreamURL, reposDir string, refresh bool) error {
 	if _, err := git.RunBare(ctx, bareDir, "config", "receive.advertisePushOptions", "true"); err != nil {
 		return fmt.Errorf("enable push options: %w", err)
 	}

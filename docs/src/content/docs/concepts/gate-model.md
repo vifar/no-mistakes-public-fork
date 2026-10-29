@@ -72,6 +72,13 @@ or rollback. A competing operation waits up to two minutes, then reports the
 lock path and asks you to retry after the holder finishes. The OS releases the
 lock when its holder exits, including on a crash.
 
+On a returned init error, provisioning metadata in an existing gate is restored
+to its prior bytes and file permissions. This includes preserved custom admission
+hooks; gate objects, refs and linked-worktree administration are never rolled
+back. Unsupported metadata file types are refused before provisioning. A rollback
+error is reported with the original failure, not treated as successful cleanup.
+This is error-path restoration, not crash recovery.
+
 Enrollment keeps the working checkout non-bare. Re-initializing a
 registered gate validates the existing bare repository instead of running
 `git init --bare` again. Git commands follow the
