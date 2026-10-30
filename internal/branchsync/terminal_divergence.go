@@ -64,11 +64,6 @@ type CustodyExitRequest struct {
 	Invoker string
 }
 
-// divergenceListLimit bounds each commit list. The acknowledgement covers the
-// exact head, so commits past the bound are still covered; the note and record
-// say how many were not listed.
-const divergenceListLimit = 200
-
 // terminalDivergence is the complete, freshly read evidence for the exit.
 type terminalDivergence struct {
 	repoID    string
@@ -170,7 +165,7 @@ func listDivergentCommits(ctx context.Context, dir, include, exclude string) ([]
 	if total == 0 {
 		return nil, 0, nil
 	}
-	listed, err := git.Run(ctx, dir, "log", "--no-color", "--format=%H%x09%s", "--max-count="+strconv.Itoa(divergenceListLimit), include, "^"+exclude)
+	listed, err := git.Run(ctx, dir, "log", "--no-color", "--format=%H%x09%s", include, "^"+exclude)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -297,13 +292,10 @@ func describeCommits(commits []db.CustodyExitCommit, total int) string {
 	if matched > 0 {
 		rest = append(rest, fmt.Sprintf("%d with a patch-ID match on the other side", matched))
 	}
-	if unlisted := total - len(commits); unlisted > 0 {
-		rest = append(rest, fmt.Sprintf("%d past the listing bound", unlisted))
-	}
 	if len(rest) > 0 {
 		summary += "; plus " + strings.Join(rest, ", ")
 	}
-	return summary + " (every listed commit is in branch_sync.recovery)"
+	return summary + " (all commits are listed in branch_sync.recovery)"
 }
 
 // ExitTerminalDivergence performs the operator's acknowledged custody exit.
@@ -434,5 +426,31 @@ func (s *Service) adoptTerminalDivergence(ctx context.Context, run *db.Run, stat
 		}
 		return moved
 	}
-	return s.finishRecover(ctx, run, true, exit)
+	result := s.finishRecover(ctx, run, true, exit)
+	if result.Recovered {
+		return result
+	}
+	rollbackCtx := context.WithoutCancel(ctx)
+	if _, err := git.Run(rollbackCtx, s.workDir(), "update-ref", branchRef, d.local, d.preserved); err != nil {
+		result.Error += fmt.Sprintf("; the local branch could not be restored from %s to %s", d.preserved, d.local)
+	} else {
+		if _, err := git.Run(rollbackCtx, s.workDir(), "read-tree", "-m", "-u", d.preserved, d.local); err != nil {
+			result.Error += "; the local branch was restored but the worktree could not be restored"
+		} else {
+			result.Error += "; the local branch and worktree were restored to the submitted head"
+		}
+	}
+	if gateMoved {
+		if _, err := git.Run(rollbackCtx, s.GateDir, "update-ref", branchRef, d.gateHead, d.preserved); err != nil {
+			result.Error += fmt.Sprintf("; the gate branch could not be restored from %s to %s", d.preserved, d.gateHead)
+		} else {
+			result.Error += "; the gate branch was restored to its exact pre-recovery head"
+		}
+	}
+	fresh, _, _ := s.inspect(rollbackCtx)
+	fresh.Safety = result.Safety
+	fresh.Error = result.Error
+	fresh.NextAction = nil
+	fresh.Changed = fresh.Local.Head != d.local
+	return fresh
 }

@@ -195,6 +195,7 @@ type Service struct {
 	beforeRecoverTerminalHeadPreserve func()
 	beforeRecoverTerminalHeadLock     func()
 	beforeRecoverWorktreeMove         func()
+	beforeCustodyExitStamp            func()
 	beforeRecoverBranchMove           func()
 	afterRecoverBranchMove            func()
 	beforeRecoverRebind               func()
@@ -1097,6 +1098,16 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 			blocked.Error = collectDivergenceDiagnostic(ctx, wd, local, preserved, "preserved pipeline head").divergenceDescription() + "; " + blocked.Error
 			return blocked
 		}
+		if keepLocal && !proven && run.LastPushedSHA == nil && value(run.PushGeneration) == 0 && run.SubmittedHeadSHA != nil && local == *run.SubmittedHeadSHA {
+			reason := source.reason
+			if reason == "" {
+				_, reason = s.discoverTerminalDivergence(ctx, state, run)
+			}
+			blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_manual_reconciliation", collectDivergenceDiagnostic(ctx, wd, local, preserved, "preserved pipeline head").divergenceDescription()+"; the unpublished divergence requires manual reconciliation because "+reason+"; custody was not returned")
+			blocked.Relation = RelationDiverged
+			blocked.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "no-mistakes axi status"}
+			return blocked
+		}
 		if keepLocal {
 			return s.recoverKeepLocalAtCurrentHead(ctx, run, state, []string{run.ID}, []string{run.HeadSHA}, nil)
 		}
@@ -1866,6 +1877,9 @@ func (s *Service) anchorReachablePreserved(ctx context.Context, state State, run
 func (s *Service) finishRecover(ctx context.Context, run *db.Run, changed bool, exit *db.CustodyExit) State {
 	var err error
 	if exit != nil {
+		if s.beforeCustodyExitStamp != nil {
+			s.beforeCustodyExitStamp()
+		}
 		err = s.DB.ReturnRunCustodyWithExit(run.ID, *exit)
 	} else {
 		err = s.DB.SetRunCustodyReturned(run.ID)

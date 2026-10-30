@@ -142,6 +142,7 @@ func newAxiSyncCmd() *cobra.Command {
 			return runAxiSync(cmd, check, recover, keepLocal, adoptPublished, bindArchiveRef, authoritativeHead)
 		},
 	}
+	cmd.Flags().Bool("json", false, "output synchronization state as JSON")
 	cmd.Flags().BoolVar(&check, "check", false, "freshly verify and return the plan without changing HEAD")
 	cmd.Flags().BoolVar(&recover, "recover", false, "return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch), or rebind a terminal run's push binding to a verified rewritten remote head (recover_remote_rewritten)")
 	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "with --recover: keep the current local head; anchor available preserved commits, discard genuinely missing ones, and make the gate follow the kept head")
@@ -707,7 +708,7 @@ func branchSyncField(state branchsync.State) toON.Field {
 		toON.Field{Key: "pr_state", Value: state.PRState},
 	)
 	if state.Recovery != nil {
-		fields = append(fields, toON.Field{Key: "recovery", Value: toON.NewObject(
+		recovery := []toON.Field{
 			toON.Field{Key: "source", Value: state.Recovery.Source},
 			toON.Field{Key: "repository", Value: state.Recovery.RepositoryID},
 			toON.Field{Key: "run", Value: state.Recovery.RunID},
@@ -717,15 +718,16 @@ func branchSyncField(state branchsync.State) toON.Field {
 			toON.Field{Key: "archive_ref", Value: state.Recovery.ArchiveRef},
 			toON.Field{Key: "keep_local", Value: state.Recovery.KeepLocal},
 			toON.Field{Key: "proof", Value: state.Recovery.Proof},
-		)})
+		}
 		if state.Recovery.Source == branchsync.RecoverySourceTerminalDivergence {
-			fields = append(fields,
+			recovery = append(recovery,
 				toON.Field{Key: "local_only", Value: custodyExitCommitRows(state.Recovery.LocalOnly)},
 				toON.Field{Key: "local_only_total", Value: state.Recovery.LocalOnlyTotal},
 				toON.Field{Key: "preserved_only", Value: custodyExitCommitRows(state.Recovery.PreservedOnly)},
 				toON.Field{Key: "preserved_only_total", Value: state.Recovery.PreservedOnlyTotal},
 			)
 		}
+		fields = append(fields, toON.Field{Key: "recovery", Value: toON.NewObject(recovery...)})
 	}
 	if state.Error != "" {
 		fields = append(fields, toON.Field{Key: "note", Value: state.Error})

@@ -23,8 +23,7 @@ type CustodyExit struct {
 	Anchors       []string            `json:"anchors"`
 	LocalOnly     []CustodyExitCommit `json:"local_only"`
 	PreservedOnly []CustodyExitCommit `json:"preserved_only"`
-	// LocalOnlyTotal and PreservedOnlyTotal count every commit on each side;
-	// the lists stop at a bound, and these say how many were not listed.
+	// LocalOnlyTotal and PreservedOnlyTotal count every commit on each side.
 	LocalOnlyTotal     int    `json:"local_only_total"`
 	PreservedOnlyTotal int    `json:"preserved_only_total"`
 	Invoker            string `json:"invoker"`

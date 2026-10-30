@@ -1,6 +1,7 @@
 package branchsync
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -526,5 +527,140 @@ func TestTerminalDivergenceAdoptRollsBackTheGateWhenTheWorktreeMoves(t *testing.
 	}
 	if f.custodyReturned() || f.exitRecord() != nil {
 		t.Fatal("refused adopt returned custody or recorded an exit")
+	}
+}
+
+func TestTerminalDivergencePlainKeepLocalRefusesIncompleteEvidence(t *testing.T) {
+	t.Parallel()
+	for _, missing := range []string{"gate_branch", "gate_anchor"} {
+		t.Run(missing, func(t *testing.T) {
+			t.Parallel()
+			f := newTerminalDivergenceFixture(t, terminalDivergenceShapes[1])
+			wantGate, wantReason := f.submitted, "has no recovery ref"
+			if missing == "gate_branch" {
+				wantGate, wantReason = f.base, "gate branch"
+				mustRun(t, f.gate, "update-ref", "refs/heads/feature/recover", f.base)
+			} else {
+				mustRun(t, f.gate, "update-ref", "-d", f.anchorRef())
+			}
+			refused := f.service.Recover(f.ctx, true)
+			if refused.Recovered || refused.Safety != "blocked_recover_manual_reconciliation" || !strings.Contains(refused.Error, wantReason) {
+				t.Fatalf("incomplete evidence recovery = %#v, want manual refusal naming %q", refused, wantReason)
+			}
+			for _, fact := range []string{f.submitted, f.preserved, "git merge-base --is-ancestor", "git merge-tree --write-tree --merge-base"} {
+				if !strings.Contains(refused.Error, fact) {
+					t.Fatalf("manual refusal omits diagnostic %q: %s", fact, refused.Error)
+				}
+			}
+			if refused.NextAction == nil || refused.NextAction.Code != "inspect_and_reconcile_manually" {
+				t.Fatalf("next action = %#v", refused.NextAction)
+			}
+			if got := f.gateBranch(); got != wantGate {
+				t.Fatalf("gate branch changed to %s, want %s", got, wantGate)
+			}
+			if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+				t.Fatalf("local head changed to %s", got)
+			}
+			if f.custodyReturned() || f.exitRecord() != nil {
+				t.Fatal("refusal returned custody or recorded an exit")
+			}
+		})
+	}
+}
+
+func TestTerminalDivergenceAdoptRestoresBranchesWhenReceiptFails(t *testing.T) {
+	t.Parallel()
+	for _, gateAlreadyPreserved := range []bool{false, true} {
+		t.Run(fmt.Sprint(gateAlreadyPreserved), func(t *testing.T) {
+			t.Parallel()
+			f := newTerminalDivergenceFixture(t, terminalDivergenceShapes[1])
+			wantGate := f.submitted
+			if gateAlreadyPreserved {
+				wantGate = f.preserved
+				mustRun(t, f.gate, "update-ref", "refs/heads/feature/recover", wantGate)
+			}
+			f.service.beforeCustodyExitStamp = func() {
+				if err := f.db.SetRunCustodyReturned(f.run.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			refused := f.service.ExitTerminalDivergence(f.ctx, CustodyExitRequest{Mode: CustodyExitAdoptPreserved, Acknowledge: f.submitted})
+			if refused.Recovered || refused.Changed || refused.Safety != "blocked_recover_stamp_failed" {
+				t.Fatalf("failed receipt adoption = %#v", refused)
+			}
+			if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+				t.Fatalf("local branch = %s, want submitted %s", got, f.submitted)
+			}
+			if got := f.gateBranch(); got != wantGate {
+				t.Fatalf("gate branch = %s, want original %s", got, wantGate)
+			}
+			if got := mustRun(t, f.local, "status", "--porcelain"); got != "" {
+				t.Fatalf("rollback left dirty worktree: %s", got)
+			}
+			if got := readOptional(t, filepath.Join(f.local, "file.txt")); got != "lane change\nline two\n" {
+				t.Fatalf("rollback content = %q", got)
+			}
+			for _, dir := range []string{f.local, f.gate} {
+				if got := mustRun(t, dir, "rev-parse", f.anchorRef()); got != f.preserved {
+					t.Fatalf("%s lost preserved anchor: %s", dir, got)
+				}
+			}
+			if got := mustRun(t, f.local, "rev-parse", f.localAnchorRef()); got != f.submitted {
+				t.Fatalf("lost local anchor: %s", got)
+			}
+			if !gateAlreadyPreserved {
+				if got := mustRun(t, f.gate, "rev-parse", custody.RecoveryGateRef(f.run.ID)); got != f.submitted {
+					t.Fatalf("lost gate anchor: %s", got)
+				}
+			}
+			if f.exitRecord() != nil {
+				t.Fatal("failed receipt wrote an exit")
+			}
+		})
+	}
+}
+
+func TestTerminalDivergenceListsEveryCommitInStatusAndReceipt(t *testing.T) {
+	t.Parallel()
+	f := newTerminalDivergenceFixture(t, terminalDivergenceShapes[1])
+	tree := mustRun(t, f.gate, "rev-parse", f.preserved+"^{tree}")
+	configureIdentity(t, f.gate)
+	head := f.preserved
+	var added []string
+	for i := 0; i < 201; i++ {
+		head = mustRun(t, f.gate, "commit-tree", tree, "-p", head, "-m", fmt.Sprintf("preserved %d", i))
+		added = append(added, head)
+	}
+	mustRun(t, f.gate, "update-ref", f.anchorRef(), head, f.preserved)
+	if err := f.db.UpdateRunHeadSHA(f.run.ID, head); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.UpdateRunStatusWithVerifiedHead(f.run.ID, types.RunCancelled, head); err != nil {
+		t.Fatal(err)
+	}
+	state := f.service.InspectCached(f.ctx)
+	if state.Recovery == nil || state.Safety != SafetyUnprovenDivergence {
+		t.Fatalf("status = %#v", state)
+	}
+	for _, sha := range added {
+		if _, ok := commitNamed(state.Recovery.PreservedOnly, sha); !ok {
+			t.Fatalf("status omitted preserved commit %s", sha)
+		}
+	}
+	if state.Recovery.PreservedOnlyTotal != len(state.Recovery.PreservedOnly) {
+		t.Fatal("status list does not match full count")
+	}
+	result := f.service.ExitTerminalDivergence(f.ctx, CustodyExitRequest{Mode: CustodyExitKeepLocal, Acknowledge: head})
+	if !result.Recovered {
+		t.Fatalf("keep-local = %#v", result)
+	}
+	exit := f.exitRecord()
+	if exit == nil || exit.PreservedOnlyTotal != len(exit.PreservedOnly) {
+		t.Fatalf("receipt = %#v", exit)
+	}
+	for _, sha := range added {
+		if _, ok := commitNamed(exit.PreservedOnly, sha); !ok {
+			t.Fatalf("receipt omitted preserved commit %s", sha)
+		}
 	}
 }

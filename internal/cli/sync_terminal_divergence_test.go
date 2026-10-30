@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -119,6 +120,31 @@ func TestAxiSyncTerminalDivergenceAcknowledgedAdoptEndToEnd(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("check output missing %q:\n%s", want, out)
 		}
+	}
+
+	out, err = executeCmd("axi", "sync", "--check", "--json")
+	if err == nil || !asExitError(err, &ee) || ee.code != 1 {
+		t.Fatalf("JSON check should refuse with exit 1: %v\n%s", err, out)
+	}
+	var status struct {
+		BranchSync struct {
+			Recovery struct {
+				LocalOnly          []db.CustodyExitCommit `json:"local_only"`
+				LocalOnlyTotal     int                    `json:"local_only_total"`
+				PreservedOnly      []db.CustodyExitCommit `json:"preserved_only"`
+				PreservedOnlyTotal int                    `json:"preserved_only_total"`
+			} `json:"recovery"`
+		} `json:"branch_sync"`
+	}
+	if err := json.Unmarshal([]byte(out), &status); err != nil {
+		t.Fatalf("decode JSON status: %v\n%s", err, out)
+	}
+	recovery := status.BranchSync.Recovery
+	if len(recovery.LocalOnly) != 1 || recovery.LocalOnly[0].SHA != f.submitted || recovery.LocalOnly[0].Subject != "lane: change line one" || recovery.LocalOnly[0].PatchID == "" || recovery.LocalOnlyTotal != 1 {
+		t.Fatalf("nested local commit evidence = %#v", recovery)
+	}
+	if len(recovery.PreservedOnly) != 3 || recovery.PreservedOnlyTotal != 3 {
+		t.Fatalf("nested preserved commit evidence = %#v", recovery)
 	}
 
 	// Unacknowledged keep-local no longer returns custody silently.
