@@ -14,8 +14,8 @@ import (
 )
 
 // Replay carry cannot bypass the fork's pinned PR comparison. Moving the
-// target after review must fail closed instead of authorizing a changed
-// comparison, even with both upstream replay and behind-repair options on.
+// target after review under rebase.integrate: always must fail closed instead
+// of authorizing a changed comparison, even with replay and behind-repair on.
 func TestCIReplayOptionCannotBypassMovedComparisonOnRealBinary(t *testing.T) {
 	scenario := filepath.Join(t.TempDir(), "ci-replay.yaml")
 	content := `actions:
@@ -51,6 +51,7 @@ func TestCIReplayOptionCannotBypassMovedComparisonOnRealBinary(t *testing.T) {
 		GlobalConfigExtra: "ci:\n  rebase_behind: true\n  carry_review_on_replay: true\nci_timeout: 180s\n",
 	})
 	h := j.h
+	j.setTrusted("rebase:\n  integrate: always\n")
 	j.setForge(forgeState{Checks: []forgeCheck{greenCheck("fixture-build")}})
 	const branch = "feature/ci-replay-comparison"
 	marker := filepath.Join(h.HomeDir, "behind-head")

@@ -21,7 +21,8 @@ func TestPRContextGuardRechecksTerminalCIAgainstLivePR(t *testing.T) {
 		movedHead, movedTarget, missingTarget, pending, wantError bool
 	}{
 		{name: "pending closed", pending: true, recorded: "closed", liveState: "closed", liveSource: "test/repo", liveBase: "main"},
-		{name: "target advanced after close", recorded: "closed", liveState: "closed", liveSource: "test/repo", liveBase: "main", movedTarget: true, wantError: true},
+		// A target that only moved is not a changed comparison, closed or not (#237).
+		{name: "target advanced after close", recorded: "closed", liveState: "closed", liveSource: "test/repo", liveBase: "main", movedTarget: true},
 		{name: "missing live target", recorded: "closed", liveState: "closed", liveSource: "test/repo", liveBase: "main", missingTarget: true, wantError: true},
 		{name: "closed", recorded: "closed", liveState: "closed", liveSource: "test/repo", liveBase: "main"},
 		{name: "reopened", recorded: "closed", liveState: "open", liveSource: "test/repo", liveBase: "main", wantError: true},
@@ -257,6 +258,9 @@ func TestPRContextGuardPinsActualTargetAndStopsAfterTargetMoves(t *testing.T) {
 	dir, mainSHA, headSHA := setupGitRepo(t)
 	ensureLocalBranch(t, dir, "develop", mainSHA)
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, mainSHA, headSHA, config.Commands{})
+	// Exercises the integrate-every-move comparison machinery; under the
+	// default a clean target advance is held instead (#237).
+	sctx.Config.Rebase.Integrate = config.RebaseIntegrateAlways
 	selection := pipeline.PRTargetSelection{TargetBranch: "develop"}
 	first, err := guardPRContextWithSelection(sctx, types.StepRebase, selection, false)
 	if err != nil || first.RestartFrom != "" {
@@ -430,7 +434,7 @@ func TestPRContextGuardProvesMergedComparison(t *testing.T) {
 		name, mode                                                                   string
 		advance, changedResult, targetMoved, missingMerge, detachedMerge, beforeStep bool
 		qualified, strict, shipping                                                  bool
-		omitObservation, earlyChange, stacked                                        bool
+		omitObservation, earlyChange, stacked, heldAdvance                           bool
 		wantError                                                                    bool
 	}
 	cases := []mergedCase{
@@ -442,17 +446,25 @@ func TestPRContextGuardProvesMergedComparison(t *testing.T) {
 		{name: "multiple rebased commits", mode: "rebase"},
 		{name: "target advances after merge", mode: "merge", advance: true},
 		{name: "merge changes result", mode: "merge", changedResult: true, wantError: true},
-		{name: "target changed before merge", mode: "merge", targetMoved: true, wantError: true},
+		// #161/#237: other merges moved the target before this one; the merge
+		// commit's first parent proves exactly the reviewed change landed.
+		{name: "target changed before merge", mode: "merge", targetMoved: true},
 		{name: "qualified advanced target merge", mode: "merge", targetMoved: true, qualified: true},
 		{name: "qualified advanced target squash", mode: "squash", targetMoved: true, qualified: true},
 		{name: "qualified advanced target rebase", mode: "rebase", targetMoved: true, qualified: true},
 		{name: "qualified advanced target merge at CI entry", mode: "merge", targetMoved: true, qualified: true, beforeStep: true},
 		{name: "qualified advanced target with later advance", mode: "merge", targetMoved: true, qualified: true, advance: true},
+		{name: "held advance above retained target merge", mode: "merge", targetMoved: true, qualified: true, heldAdvance: true},
+		{name: "held advance above retained target squash", mode: "squash", targetMoved: true, qualified: true, heldAdvance: true},
+		{name: "held advance above retained target at CI entry", mode: "merge", targetMoved: true, qualified: true, heldAdvance: true, beforeStep: true},
+		{name: "held advance above retained target with later advance", mode: "merge", targetMoved: true, qualified: true, heldAdvance: true, advance: true},
+		{name: "held advance above retained target changed result", mode: "merge", targetMoved: true, qualified: true, heldAdvance: true, changedResult: true, wantError: true},
+		{name: "held advance above retained target rebase last commit", mode: "rebase", targetMoved: true, qualified: true, heldAdvance: true, wantError: true},
 		{name: "qualified advanced target changed result", mode: "merge", targetMoved: true, qualified: true, changedResult: true, wantError: true},
 		{name: "qualified advanced target corrupt rebased prefix", mode: "rebase", targetMoved: true, qualified: true, earlyChange: true, wantError: true},
-		{name: "qualified advanced target without observation", mode: "merge", targetMoved: true, qualified: true, omitObservation: true, wantError: true},
-		{name: "qualified advanced target strict protection", mode: "merge", targetMoved: true, qualified: true, strict: true, wantError: true},
-		{name: "qualified advanced target strict shipping", mode: "merge", targetMoved: true, qualified: true, shipping: true, wantError: true},
+		{name: "qualified advanced target without observation", mode: "merge", targetMoved: true, qualified: true, omitObservation: true},
+		{name: "qualified advanced target strict protection", mode: "merge", targetMoved: true, qualified: true, strict: true},
+		{name: "qualified advanced target strict shipping", mode: "merge", targetMoved: true, qualified: true, shipping: true},
 		{name: "qualified stacked target merge", mode: "merge", targetMoved: true, qualified: true, stacked: true},
 		{name: "qualified stacked target squash", mode: "squash", targetMoved: true, qualified: true, stacked: true},
 		{name: "qualified stacked target rebase", mode: "rebase", targetMoved: true, qualified: true, stacked: true},
@@ -545,6 +557,30 @@ func TestPRContextGuardProvesMergedComparison(t *testing.T) {
 				gitCmd(t, dir, "checkout", "main")
 			}
 		}
+		if tc.heldAdvance {
+			retained := gitCmd(t, dir, "rev-parse", "HEAD")
+			if got, err := sctx.DB.GetRetainedPRTarget(sctx.Run.ID, before); err != nil || got != retained {
+				t.Fatalf("first target was not retained: got %q, want %q: %v", got, retained, err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "later-target.txt"), []byte("later target change\n"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, dir, "add", "later-target.txt")
+			gitCmd(t, dir, "commit", "-m", "second target advance")
+			gitCmd(t, dir, "checkout", "feature")
+			sctx.Config.Rebase.Integrate = config.RebaseIntegrateOnConflict
+			host, reason := buildHost(sctx, resolvedProvider(sctx))
+			if host == nil {
+				t.Fatalf("build proof host: %s", reason)
+			}
+			if err := verifyCurrentPRComparison(sctx, host, selection, before, nil); err != nil {
+				t.Fatalf("monitor rejected a pure advance: %v", err)
+			}
+			if got, err := sctx.DB.GetRetainedPRTarget(sctx.Run.ID, before); err != nil || got != retained {
+				t.Fatalf("held advance changed the retained floor: got %q, want %q: %v", got, retained, err)
+			}
+			gitCmd(t, dir, "checkout", "main")
+		}
 		switch tc.mode {
 		case "squash":
 			gitCmd(t, dir, "merge", "--squash", "feature")
@@ -615,7 +651,7 @@ func TestPRContextGuardProvesMergedComparison(t *testing.T) {
 				baseline := tc
 				baseline.changedResult, baseline.targetMoved, baseline.missingMerge, baseline.detachedMerge, baseline.wantError = false, false, false, false, false
 				baseline.strict, baseline.shipping = false, false
-				baseline.earlyChange = false
+				baseline.earlyChange, baseline.heldAdvance = false, false
 				run(t, baseline)
 			}
 			run(t, tc)

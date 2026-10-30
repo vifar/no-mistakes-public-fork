@@ -672,14 +672,12 @@ func TestClaudeAgent_EarlyExitWithoutReadingLargeStdinDoesNotLeakGoroutines(t *t
 	prompt := strings.Repeat("e", 2*1024*1024)
 	before := runtime.NumGoroutine()
 
+	// Completion and the goroutine count below prove stdin cleanup. Process
+	// startup under -race and runner load has no fixed latency contract.
 	for i := 0; i < 8; i++ {
-		started := time.Now()
 		_, err := a.runOnce(context.Background(), RunOpts{Prompt: prompt, CWD: t.TempDir()})
 		if err == nil {
 			t.Fatal("early helper exit unexpectedly succeeded")
-		}
-		if time.Since(started) > 3*time.Second {
-			t.Fatalf("early helper exit took too long: %v", time.Since(started))
 		}
 	}
 

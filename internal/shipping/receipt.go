@@ -122,7 +122,7 @@ func Sign(payload []byte, input io.Reader) ([]byte, error) {
 
 // Export constructs a receipt from durable pipeline authority and brackets its
 // source/target facts. It does not consume caller JSON or mutate run state.
-func Export(ctx context.Context, database *db.DB, repo *db.Repo, runID, phase string, host scm.Host) ([]byte, error) {
+func Export(ctx context.Context, database *db.DB, repo *db.Repo, runID, phase string, host scm.Host, global *config.GlobalConfig) ([]byte, error) {
 	if safeurl.Redact(repo.UpstreamURL) != repo.UpstreamURL && strings.HasPrefix(repo.UpstreamURL, "http") || safeurl.Redact(repo.PushURL()) != repo.PushURL() && strings.HasPrefix(repo.PushURL(), "http") {
 		return nil, fmt.Errorf("credential-bearing shipping URL is refused")
 	}
@@ -148,6 +148,10 @@ func Export(ctx context.Context, database *db.DB, repo *db.Repo, runID, phase st
 	if dir == "" {
 		return nil, fmt.Errorf("shipping proof lacks recorded worktree")
 	}
+	keepClean, err := exportKeepsCleanHeads(ctx, dir, repo, global)
+	if err != nil {
+		return nil, err
+	}
 	pr := &scm.PR{URL: first.PRURL, HeadSHA: first.LocalHeadSHA}
 	pr.Number, err = scm.ExtractPRNumber(pr.URL)
 	if err != nil {
@@ -157,13 +161,14 @@ func Export(ctx context.Context, database *db.DB, repo *db.Repo, runID, phase st
 	if err != nil {
 		return nil, err
 	}
-	if err := checkFacts(first, repo, facts, run.Shipping.Draft); err != nil {
+	if err := checkFacts(ctx, dir, run, first, repo, facts, run.Shipping.Draft, keepClean); err != nil {
 		return nil, err
 	}
 	if run.Shipping.Draft == nil {
 		first.Draft = facts.Draft
 	}
-	if err := checkGit(ctx, dir, repo, first); err != nil {
+	firstTarget, err := checkGit(ctx, dir, run, repo, first, keepClean)
+	if err != nil {
 		return nil, err
 	}
 	if phase == "ci-ready" {
@@ -200,10 +205,24 @@ func Export(ctx context.Context, database *db.DB, repo *db.Repo, runID, phase st
 	if err != nil {
 		return nil, err
 	}
+	if err := checkFacts(ctx, dir, run, first, repo, afterFacts, run.Shipping.Draft, keepClean); err != nil {
+		return nil, err
+	}
+	floor := first
+	floor.TargetSHA = facts.TargetSHA
+	if err := checkReceiptTarget(ctx, dir, run, repo, floor, afterFacts.TargetSHA, keepClean); err != nil {
+		return nil, err
+	}
+	facts.TargetSHA = afterFacts.TargetSHA
 	if !reflect.DeepEqual(facts, afterFacts) {
 		return nil, fmt.Errorf("PR comparison moved during receipt export")
 	}
-	if err := checkGit(ctx, dir, repo, first); err != nil {
+	lastTarget, err := checkGit(ctx, dir, run, repo, first, keepClean)
+	if err != nil {
+		return nil, err
+	}
+	floor.TargetSHA = firstTarget
+	if err := checkReceiptTarget(ctx, dir, run, repo, floor, lastTarget, keepClean); err != nil {
 		return nil, err
 	}
 	after, err := durablePayload(database, runID, phase)
@@ -358,46 +377,103 @@ func durablePayload(database *db.DB, runID, phase string) (Payload, error) {
 	return p, nil
 }
 
-func checkFacts(p Payload, repo *db.Repo, f scm.PRFacts, draft *bool) error {
-	if f.State != scm.PRStateOpen || f.URL != p.PRURL || f.SourceRepo != p.SourceRepo || f.SourceRepo != github.RepoSlug(repo.PushURL()) || f.SourceBranch != p.SourceBranch || f.HeadSHA != p.LocalHeadSHA || f.TargetRepo != github.RepoSlug(repo.UpstreamURL) || f.TargetBranch != p.TargetBranch || f.TargetSHA != p.TargetSHA || draft != nil && f.Draft != *draft {
+func checkFacts(ctx context.Context, dir string, run *db.Run, p Payload, repo *db.Repo, f scm.PRFacts, draft *bool, keepClean bool) error {
+	if f.State != scm.PRStateOpen || f.URL != p.PRURL || f.SourceRepo != p.SourceRepo || f.SourceRepo != github.RepoSlug(repo.PushURL()) || f.SourceBranch != p.SourceBranch || f.HeadSHA != p.LocalHeadSHA || f.TargetRepo != github.RepoSlug(repo.UpstreamURL) || f.TargetBranch != p.TargetBranch || draft != nil && f.Draft != *draft {
 		return fmt.Errorf("live PR comparison differs from approved Review")
+	}
+	return checkReceiptTarget(ctx, dir, run, repo, p, f.TargetSHA, keepClean)
+}
+
+func checkReceiptTarget(ctx context.Context, dir string, run *db.Run, repo *db.Repo, p Payload, tip string, keepClean bool) error {
+	if tip == p.TargetSHA {
+		return nil
+	}
+	upstreamURL := git.ResolveUpstreamURL(ctx, dir, repo.UpstreamURL, repo.URLsVerified)
+	c := &db.ReviewComparison{TargetSHA: p.TargetSHA, HeadSHA: p.LocalHeadSHA, MergeBaseSHA: p.MergeBaseSHA}
+	advanced, err := TargetAdvancedCleanly(ctx, dir, upstreamURL, run, c, tip, keepClean)
+	if err != nil {
+		return err
+	}
+	if !advanced {
+		return fmt.Errorf("live target moved after Review")
 	}
 	return nil
 }
-func checkGit(ctx context.Context, dir string, repo *db.Repo, p Payload) error {
+
+func checkGit(ctx context.Context, dir string, run *db.Run, repo *db.Repo, p Payload, keepClean bool) (string, error) {
 	head, err := git.HeadSHA(ctx, dir)
 	if err != nil {
-		return err
+		return "", err
 	}
 	status, err := git.Run(ctx, dir, "status", "--porcelain")
 	if err != nil {
-		return err
+		return "", err
 	}
 	if head != p.LocalHeadSHA || strings.TrimSpace(status) != "" {
-		return fmt.Errorf("pipeline worktree differs from reviewed head")
+		return "", fmt.Errorf("pipeline worktree differs from reviewed head")
 	}
 	pushURL := git.ResolvePushURL(ctx, dir, repo.UpstreamURL, repo.ForkURL, repo.URLsVerified)
 	source, err := RemoteHead(ctx, dir, pushURL, p.SourceBranch)
 	if err != nil {
-		return err
+		return "", err
 	}
 	upstreamURL := git.ResolveUpstreamURL(ctx, dir, repo.UpstreamURL, repo.URLsVerified)
 	target, err := RemoteHead(ctx, dir, upstreamURL, p.TargetBranch)
 	if err != nil {
-		return err
+		return "", err
 	}
-	if source != p.LocalHeadSHA || target != p.TargetSHA {
-		return fmt.Errorf("live source or target moved after Review")
+	if source != p.LocalHeadSHA {
+		return "", fmt.Errorf("live source moved after Review")
+	}
+	if err := checkReceiptTarget(ctx, dir, run, repo, p, target, keepClean); err != nil {
+		return "", err
 	}
 	base, diff, err := Compare(ctx, dir, p.TargetSHA, p.LocalHeadSHA)
 	if err != nil {
-		return err
+		return "", err
 	}
-	if p.ShippingMode == types.ShippingFull && base != p.TargetSHA {
-		return fmt.Errorf("strict full shipping target is absent from reviewed head; rerun Rebase")
+	if p.ShippingMode == types.ShippingFull {
+		integrated, err := TargetIntegrated(ctx, dir, p.TargetSHA, base, p.LocalHeadSHA, keepClean)
+		if err != nil {
+			return "", err
+		}
+		if !integrated {
+			return "", fmt.Errorf("strict full shipping head conflicts with its target; rerun Rebase")
+		}
 	}
 	if base != p.MergeBaseSHA || diff != p.DiffDigest {
-		return fmt.Errorf("raw reviewed comparison changed")
+		return "", fmt.Errorf("raw reviewed comparison changed")
 	}
-	return nil
+	return target, nil
+}
+
+func exportKeepsCleanHeads(ctx context.Context, dir string, repo *db.Repo, global *config.GlobalConfig) (bool, error) {
+	if global == nil || repo.DefaultBranch == "" {
+		return false, fmt.Errorf("shipping integration policy requires global config and a trusted default branch")
+	}
+	upstreamURL := git.ResolveUpstreamURL(ctx, dir, repo.UpstreamURL, repo.URLsVerified)
+	tip, err := RemoteHead(ctx, dir, upstreamURL, repo.DefaultBranch)
+	if err != nil {
+		return false, err
+	}
+	if _, err := git.RunNetwork(ctx, dir, "fetch", "--no-tags", "--no-write-fetch-head", upstreamURL, tip); err != nil {
+		return false, err
+	}
+	entry, err := git.Run(ctx, dir, "ls-tree", tip, "--", ".no-mistakes.yaml")
+	if err != nil {
+		return false, err
+	}
+	trusted := &config.RepoConfig{}
+	if entry != "" {
+		content, err := git.ShowFile(ctx, dir, tip, ".no-mistakes.yaml")
+		if err != nil {
+			return false, err
+		}
+		trusted, err = config.LoadRepoFromBytes([]byte(content))
+		if err != nil {
+			return false, err
+		}
+	}
+	cfg := config.Merge(global, config.EffectiveRepoConfig(nil, trusted, false))
+	return cfg.Rebase.Integrate != config.RebaseIntegrateAlways, nil
 }

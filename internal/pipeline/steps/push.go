@@ -654,13 +654,20 @@ func shippingTargetCurrent(sctx *pipeline.StepContext, head string) (bool, error
 	if c == nil || !c.Approved || c.HeadSHA != head || c.Generation < 1 {
 		return false, fmt.Errorf("strict publication lacks approved comparison generation")
 	}
-	if sctx.Run.Shipping.Mode == types.ShippingFull && c.MergeBaseSHA != c.TargetSHA {
-		return false, nil
+	if sctx.Run.Shipping.Mode == types.ShippingFull {
+		integrated, err := shipping.TargetIntegrated(sctx.Ctx, sctx.WorkDir, c.TargetSHA, c.MergeBaseSHA, c.HeadSHA, keepsCleanHeads(sctx))
+		if err != nil || !integrated {
+			return false, err
+		}
 	}
 	targetURL := git.ResolveUpstreamURL(sctx.Ctx, sctx.WorkDir, sctx.Repo.UpstreamURL, sctx.Repo.URLsVerified)
 	target, err := shipping.RemoteHead(sctx.Ctx, sctx.WorkDir, targetURL, c.TargetBranch)
 	if err != nil {
 		return false, err
 	}
-	return target == c.TargetSHA, nil
+	if target == c.TargetSHA {
+		return true, nil
+	}
+	// A target that merely moved keeps the approved comparison (#237).
+	return shipping.TargetAdvancedCleanly(sctx.Ctx, sctx.WorkDir, targetURL, sctx.Run, c, target, keepsCleanHeads(sctx))
 }

@@ -219,12 +219,18 @@ Previous review findings to address:
 	}
 	var reviewGeneration int64
 	if sctx.Run.Shipping != nil {
-		comparison, err := shipping.Capture(ctx, sctx.DB, sctx.Repo, sctx.Run, sctx.WorkDir, effectivePRBaseBranch(sctx))
+		comparison, err := shipping.Capture(ctx, sctx.DB, sctx.Repo, sctx.Run, sctx.WorkDir, effectivePRBaseBranch(sctx), keepsCleanHeads(sctx))
 		if err != nil {
 			return nil, err
 		}
-		if sctx.Run.Shipping.Mode == types.ShippingFull && comparison.MergeBaseSHA != comparison.TargetSHA {
-			return &pipeline.StepOutcome{RestartFrom: types.StepRebase}, nil
+		if sctx.Run.Shipping.Mode == types.ShippingFull {
+			integrated, err := shipping.TargetIntegrated(ctx, sctx.WorkDir, comparison.TargetSHA, comparison.MergeBaseSHA, comparison.HeadSHA, keepsCleanHeads(sctx))
+			if err != nil {
+				return nil, err
+			}
+			if !integrated {
+				return &pipeline.StepOutcome{RestartFrom: types.StepRebase}, nil
+			}
 		}
 		baseSHA = comparison.MergeBaseSHA
 		reviewGeneration = comparison.Generation

@@ -8,7 +8,7 @@ Per-repo configuration lives in `.no-mistakes.yaml` at the root of your reposito
 :::caution[Security: gate-control fields are read from the default branch]
 `commands.*` and `gates[].command` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor` and `devin`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
-The daemon also reads `document.instructions`, `document.doc_only_paths`, `document.max_commits_per_run`, `review.conversation`, `review.path_instructions`, `gates`, `auto_fix.gates`, `protected_paths`, `staging_exclude`, `max_file_size_bytes`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `ci.review_bot_comments`, `ci.required_checks`, `ci.must_pass`, `ci.external_checks`, `ci.rebase_behind`, `ci.carry_review_on_replay`, `rebase.strategy`, `rebase.max_target_advance_rewinds`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `pr.template`, `pr.publish_intent`, and `pr.appendix` only from that trusted copy.
+The daemon also reads `document.instructions`, `document.doc_only_paths`, `document.max_commits_per_run`, `review.conversation`, `review.path_instructions`, `gates`, `auto_fix.gates`, `protected_paths`, `staging_exclude`, `max_file_size_bytes`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `ci.review_bot_comments`, `ci.required_checks`, `ci.must_pass`, `ci.external_checks`, `ci.rebase_behind`, `ci.carry_review_on_replay`, `rebase.strategy`, `rebase.integrate`, `rebase.max_target_advance_rewinds`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `pr.template`, `pr.publish_intent`, and `pr.appendix` only from that trusted copy.
 `pr.base_branch` is trusted-default-branch-only as well, but unlike those fields it follows the same `allow_repo_commands: true` opt-in exception as `commands`/`agent` (see [`pr.base_branch`](#prbase_branch) below).
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
@@ -100,6 +100,7 @@ ci:
 # Read only from the trusted default branch.
 rebase:
   strategy: rebase # or: merge
+  integrate: on-conflict # or: always
 
 commit:
   fix_message: "chore(no-mistakes-{{.Step}}): {{.Summary}}"
@@ -1089,9 +1090,35 @@ ci:
 
 An external approval app, such as a GitHub App job that approves the exact head after an outside reviewer signs off, cannot pass until the head has been published and reviewed externally. Waiting on it, or trying to repair it, deadlocks the run; in strict shipping the failing context would park the CI step as an actionable finding that can be neither approved nor skipped. A check classified as external under the [scope rules](#cirequired_checks) is reported in the step log as `external (awaiting outside approval)`, is never waited on, never repaired, and never becomes a finding, even when the target branch requires it. `external_checks` outranks `must_pass` and the required set. Patterns use the same glob syntax and name forms as [`ci.must_pass`](#cimust_pass), including the job-part rule for a required context that has not registered yet: with the branch requiring `approve`, `Final Approval / approve*` excludes it before it appears, so it never becomes a pending placeholder. Because a context that has not registered yet carries no workflow, that rule matches by the job part alone: choose a qualified pattern whose job part does not also name another workflow's required check, or that check is excluded until it registers. The [`ci.review_bot_comments` reference](#cireview_bot_comments) owns how explicit exclusions affect review-bot comments and completion signals. A list set here replaces the operator's [`ci.external_checks`](/no-mistakes/reference/global-config/#ciexternal_checks); `[]` clears it.
 
+### rebase.integrate
+
+When the [Rebase step](/no-mistakes/reference/pipeline-steps/#rebase) integrates the PR base branch at all. [`rebase.strategy`](#rebasestrategy) decides how.
+
+| | |
+|---|---|
+| Type | `string` (`on-conflict` or `always`) |
+| Default | `on-conflict` |
+| Trust | Read only from the trusted default branch |
+
+```yaml
+rebase:
+  integrate: always
+```
+
+- **`on-conflict` (default)** integrates the base only when the branch head conflicts with it. Before each integration the step merges the head into the fetched base with `git merge-tree`, which leaves refs, the index, and worktree files untouched. A clean merge keeps the head exactly as it is: no rebase, no merge commit and no reset, including a head that is behind the base. A pull request merges from its own head, so keeping it up to date buys nothing, and every new head it would create must be reviewed, tested and pushed again. A real conflict integrates and resolves as before.
+- **`always`** integrates every base that moved. This was the behavior before this setting existed. Use it when the target's protection requires a branch to be up to date before it merges.
+
+The same setting governs [target advances during validation, publication, and shipping](/no-mistakes/reference/pipeline-steps/#target-advances-before-publication), whose step reference owns the comparison and evidence rules.
+
+The separate explicit opt-in [`ci.rebase_behind: true`](#cirebase_behind) still rebases a green BEHIND PR, regardless of `rebase.integrate`.
+
+The pushed source branch is not the base. Commits already on it are always integrated, so publication never drops them.
+
+This value comes only from the trusted default-branch copy, regardless of [`allow_repo_commands`](#allow_repo_commands), and overrides the operator's [`rebase.integrate`](/no-mistakes/reference/global-config/#rebaseintegrate). A pushed branch cannot change it in either direction. Unrecognized values fail configuration loading closed.
+
 ### rebase.strategy
 
-How the [Rebase step](/no-mistakes/reference/pipeline-steps/#rebase) integrates a base branch that moved under the gated branch.
+How the [Rebase step](/no-mistakes/reference/pipeline-steps/#rebase) performs an integration selected by [`rebase.integrate`](#rebaseintegrate).
 
 | | |
 |---|---|
@@ -1104,7 +1131,7 @@ rebase:
   strategy: merge
 ```
 
-**Opting in.** Commit that block to your **default branch** (the same copy the daemon reads `commands` and `agent` from). It takes effect on the next run of every branch in the repository; a branch cannot opt itself in or out. The default stays `rebase` for every repository that does not ask, so upgrading no-mistakes never changes the shape of history under you.
+**Opting in.** Commit that block to your **default branch** (the same copy the daemon reads `commands` and `agent` from). It takes effect on the next run of every branch in the repository; a branch cannot opt itself in or out.
 
 - **`rebase` (default)** replays the branch's commits on top of the new base. This is the historical behavior and is unchanged.
 - **`merge`** integrates the base with a `git merge --no-ff` commit whose **first parent** is the head the pipeline reviewed.

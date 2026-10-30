@@ -98,7 +98,7 @@ func newAxiReviewReceiptCmd() *cobra.Command {
 			if err != nil {
 				return emitError(cmd, 1, err.Error())
 			}
-			payload, err := shipping.Export(cmd.Context(), database, repo, runID, phase, host)
+			payload, err := shipping.Export(cmd.Context(), database, repo, runID, phase, host, global)
 			if err != nil {
 				return emitError(cmd, 1, safeurl.RedactText(err.Error()))
 			}

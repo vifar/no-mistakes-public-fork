@@ -37,7 +37,7 @@ func TestLeftoverTargetAdvanceLiveJourney(t *testing.T) {
 			if kind == "custom gate" {
 				config = fmt.Sprintf("commands:\n  test: 'true'\n  lint: 'true'\ngates:\n  - name: validation\n    after: test\n    command: %q\n", command)
 			}
-			commitTrustedRepoConfig(t, h, config)
+			commitTrustedRepoConfig(t, h, "rebase:\n  integrate: always\n"+config)
 			base := h.UpstreamBranchSHA("main")
 			target := h.CommitChange("main", "landed.txt", "landed target\n", "prepare advance")
 			gitIn(t, h, h.WorkDir, "push", "origin", target+":refs/heads/prepared-target")

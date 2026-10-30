@@ -58,6 +58,8 @@ func TestRebaseStep_ConflictTriesAllTargets(t *testing.T) {
 
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	// Exercises integration of a clean moved base; see #237.
+	sctx.Config.Rebase.Integrate = config.RebaseIntegrateAlways
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Repo.UpstreamURL = upstream
 
@@ -363,6 +365,8 @@ func TestRebaseStep_FixModeNonConflictFailureReturnsError(t *testing.T) {
 
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	// Exercises integration of a clean moved base; see #237.
+	sctx.Config.Rebase.Integrate = config.RebaseIntegrateAlways
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Fixing = true
@@ -418,6 +422,8 @@ func TestRebaseStep_NonConflictFailureWithRebaseMetadataReturnsError(t *testing.
 
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	// Exercises integration of a clean moved base; see #237.
+	sctx.Config.Rebase.Integrate = config.RebaseIntegrateAlways
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Repo.UpstreamURL = upstream
 
@@ -531,6 +537,8 @@ func TestRebaseStep_RemapsUncertifiedRangeWhenHeadRewritten(t *testing.T) {
 
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, toSHA, config.Commands{})
+	// Exercises integration of a clean moved base; see #237.
+	sctx.Config.Rebase.Integrate = config.RebaseIntegrateAlways
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Repo.UpstreamURL = upstream
 	if err := sctx.DB.UpsertUncertifiedPipelineRange(sctx.Repo.ID, sctx.Run.Branch, fromSHA, toSHA, sctx.Run.ID); err != nil {

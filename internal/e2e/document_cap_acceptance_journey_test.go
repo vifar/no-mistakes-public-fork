@@ -36,13 +36,30 @@ func capJourneyCalls(h *Harness) int {
 func capJourneyRestored(t *testing.T, h *Harness, run *ipc.RunInfo, head string) {
 	t.Helper()
 	worktree := paths.WithRoot(h.NMHome).WorktreeDir(run.RepoID, run.ID)
-	if got := gitIn(t, h, worktree, "rev-parse", "HEAD"); got != head {
+	// A terminal run may already have removed its worktree. Rollback to the
+	// submitted head needs no recovery ref: that head stays on the gate branch.
+	gitArgs := []string{}
+	gitDir := worktree
+	if run.Status.Terminal() {
+		gitDir = h.WorkDir
+		gitArgs = []string{"--git-dir=" + paths.WithRoot(h.NMHome).RepoDir(run.RepoID)}
+	}
+	ref := "HEAD"
+	if run.Status.Terminal() {
+		if run.HeadSHA != head {
+			t.Fatalf("rollback recorded a different terminal head: got=%s want=%s", run.HeadSHA, head)
+		}
+		ref = "refs/heads/" + run.Branch
+	}
+	if got := gitIn(t, h, gitDir, append(gitArgs, "rev-parse", ref)...); got != head {
 		t.Fatalf("over-budget commit survived: got=%s want=%s", got, head)
 	}
-	if got := gitIn(t, h, worktree, "status", "--porcelain"); got != "" {
-		t.Fatalf("over-budget edits survived: %s", got)
+	if !run.Status.Terminal() {
+		if got := gitIn(t, h, worktree, "status", "--porcelain"); got != "" {
+			t.Fatalf("over-budget edits survived: %s", got)
+		}
 	}
-	t.Logf("actual Git state: HEAD=%s; clean worktree; gap-check calls=%d", head, capJourneyCalls(h))
+	t.Logf("preserved Git head=%s; gap-check calls=%d", head, capJourneyCalls(h))
 	if passes := documentJourneyPasses(t, h, run.ID); len(passes) != 0 {
 		t.Fatalf("zero-budget check spent a pass: %+v", passes)
 	}

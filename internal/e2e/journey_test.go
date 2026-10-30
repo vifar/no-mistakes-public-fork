@@ -1253,6 +1253,9 @@ func assertNonEmptyDiffAfterRebaseRun(t *testing.T, h *Harness) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	branchHead := h.CommitChange("non-empty-after-rebase", "non-empty-after-rebase.txt", "feature survives rebase\n", "add surviving feature")
+	// Issue #237: a clean head keeps its exact commit and proposed diff,
+	// even after its base advances independently.
+	originalMergeBase := gitIn(t, h, h.WorkDir, "merge-base", branchHead, "main")
 	if out, err := h.runGit(ctx, h.WorkDir, "checkout", "main"); err != nil {
 		t.Fatalf("checkout main before non-empty rebase advance: %v\n%s", err, out)
 	}
@@ -1277,19 +1280,16 @@ func assertNonEmptyDiffAfterRebaseRun(t *testing.T, h *Harness) {
 	if run.Status != types.RunCompleted {
 		t.Fatalf("non-empty-after-rebase run did not complete: status=%s error=%v", run.Status, deref(run.Error))
 	}
-	if run.HeadSHA == branchHead {
-		t.Fatalf("expected rebase to rewrite head SHA, still %s", run.HeadSHA)
+	if run.HeadSHA != branchHead {
+		t.Fatalf("clean head changed: got %s, want submitted %s", run.HeadSHA, branchHead)
 	}
+	assertPushedHead(t, run.HeadSHA, h.UpstreamBranchSHA("non-empty-after-rebase"))
 	mergeBase, err := h.runGit(ctx, h.UpstreamDir, "merge-base", "refs/heads/non-empty-after-rebase", "refs/heads/main")
 	if err != nil {
 		t.Fatalf("resolve non-empty-after-rebase merge-base: %v\n%s", err, mergeBase)
 	}
-	mainSHA, err := h.runGit(ctx, h.UpstreamDir, "rev-parse", "refs/heads/main")
-	if err != nil {
-		t.Fatalf("resolve upstream main SHA: %v\n%s", err, mainSHA)
-	}
-	if strings.TrimSpace(string(mergeBase)) != strings.TrimSpace(string(mainSHA)) {
-		t.Fatalf("non-empty-after-rebase merge-base = %s, want upstream main %s", strings.TrimSpace(string(mergeBase)), strings.TrimSpace(string(mainSHA)))
+	if strings.TrimSpace(string(mergeBase)) != originalMergeBase {
+		t.Fatalf("clean head's merge-base = %s, want original %s", strings.TrimSpace(string(mergeBase)), originalMergeBase)
 	}
 	for _, stepName := range []types.StepName{types.StepRebase, types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepPush} {
 		step, ok := findStep(run.Steps, stepName)

@@ -181,6 +181,7 @@ func liveStoredCommitMessage(t *testing.T, h *Harness, dir, sha string) []byte {
 // A second real Git replay uses the policy installed by the daemon's real CLI.
 func TestAttributionImportedReplayLiveJourney(t *testing.T) {
 	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: configurableFixCommitScenario(t, "unused")})
+	commitTrustedRepoConfig(t, h, "rebase:\n  integrate: always\n")
 	if out, err := h.Run("init"); err != nil {
 		t.Fatalf("init: %v\n%s", err, out)
 	}

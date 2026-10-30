@@ -70,6 +70,9 @@ func TestTargetRewindRecoveryRealGuard(t *testing.T) {
 				Config: config.Merge(config.DefaultGlobalConfig(), &config.RepoConfig{}),
 				Log:    func(s string) { t.Log(s) }, LogFile: func(s string) { t.Log(s) },
 			}
+			// The empty-commit advance is clean; this exercises the rewind
+			// recovery itself, so every move integrates (#237 holds clean ones).
+			c.Config.Rebase.Integrate = config.RebaseIntegrateAlways
 			if _, err = steps.GuardPRContext(c, types.StepRebase); err != nil {
 				t.Fatal(err)
 			}

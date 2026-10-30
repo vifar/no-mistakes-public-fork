@@ -36,7 +36,7 @@ func TestMergeReplayCanonicalBytes(t *testing.T) {
 				return nil, nil
 			}}, "rebase")
 			if imported {
-				if err := rebaseWithAgent(c.Ctx, c, "origin/imported"); err != nil {
+				if err := rebaseWithAgent(c.Ctx, c, "origin/imported", false); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := updateHeadSHA(c.Ctx, c, "main"); err != nil {
@@ -44,7 +44,7 @@ func TestMergeReplayCanonicalBytes(t *testing.T) {
 				}
 			}
 			for round := 0; round < 2; round++ {
-				if err := rebaseWithAgent(c.Ctx, c, "origin/main"); err != nil {
+				if err := rebaseWithAgent(c.Ctx, c, "origin/main", false); err != nil {
 					t.Fatal(err)
 				}
 				if got := parents(t, f.dir, "HEAD"); len(got) != 2 {
@@ -104,7 +104,7 @@ func TestMergeReplayConflictContinuation(t *testing.T) {
 		return &agent.Result{}, nil
 	}}, "rebase")
 	for round := 0; round < 2; round++ {
-		if err := rebaseWithAgent(c.Ctx, c, "origin/main"); err != nil {
+		if err := rebaseWithAgent(c.Ctx, c, "origin/main", false); err != nil {
 			t.Fatal(err)
 		}
 		if turns != round+1 || len(parents(t, f.dir, "HEAD")) != 2 {

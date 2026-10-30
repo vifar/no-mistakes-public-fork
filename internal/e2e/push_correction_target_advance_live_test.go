@@ -34,7 +34,7 @@ func TestPushCorrectionTargetAdvanceLiveJourney(t *testing.T) {
 				h = NewHarness(t, opts)
 			}
 			script := filepath.Join(filepath.Dir(h.AgentLog), "format-race.sh")
-			commitTrustedRepoConfig(t, h, fmt.Sprintf("commands:\n  test: 'true'\n  lint: 'true'\n  format: %q\n", "sh "+shellQuote(script)))
+			commitTrustedRepoConfig(t, h, fmt.Sprintf("rebase:\n  integrate: always\ncommands:\n  test: 'true'\n  lint: 'true'\n  format: %q\n", "sh "+shellQuote(script)))
 			base := h.UpstreamBranchSHA("main")
 			target := h.CommitChange("main", "landed.txt", "advanced target\n", "prepare target")
 			gitIn(t, h, h.WorkDir, "push", "origin", target+":refs/heads/prepared-target")
@@ -105,7 +105,7 @@ func TestPushTargetAdvanceBudgetLiveJourney(t *testing.T) {
 	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: cleanReviewScenario(t)})
 	root := filepath.Dir(h.AgentLog)
 	script, count := filepath.Join(root, "advance-at-push.sh"), filepath.Join(root, "push-count")
-	commitTrustedRepoConfig(t, h, fmt.Sprintf("commands:\n  test: 'true'\n  lint: 'true'\n  format: %q\nrebase:\n  max_target_advance_rewinds: 1\n", "sh "+shellQuote(script)))
+	commitTrustedRepoConfig(t, h, fmt.Sprintf("commands:\n  test: 'true'\n  lint: 'true'\n  format: %q\nrebase:\n  integrate: always\n  max_target_advance_rewinds: 1\n", "sh "+shellQuote(script)))
 	base := h.UpstreamBranchSHA("main")
 	first := h.CommitChange("main", "landed.txt", "first target\n", "prepare first advance")
 	second := h.CommitChange("main", "landed.txt", "second target\n", "prepare second advance")

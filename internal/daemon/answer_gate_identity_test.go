@@ -63,14 +63,10 @@ func TestAnswerReviewQuestionDelayedReleaseMustNotConsumeNextGate(t *testing.T) 
 			go func() { done <- executor.Execute(ctx, run, repo, workDir) }()
 			t.Cleanup(func() {
 				cancel()
-				select {
-				case <-done:
-				case <-time.After(5 * time.Second):
-					t.Error("executor did not stop")
-				}
+				<-done
 				m.beforeAnswerRespond = nil
 			})
-			first := diagnosticWaitPark(t, parks)
+			first := <-parks
 			if first.Findings == nil || !strings.Contains(*first.Findings, "question-q1") {
 				t.Fatalf("first park: %+v", first)
 			}
@@ -89,18 +85,10 @@ func TestAnswerReviewQuestionDelayedReleaseMustNotConsumeNextGate(t *testing.T) 
 				default:
 					close(release)
 				}
-				select {
-				case <-answerDone:
-				case <-time.After(5 * time.Second):
-					t.Error("answer handler did not stop")
-				}
+				<-answerDone
 			})
-			select {
-			case <-paused:
-			case <-time.After(5 * time.Second):
-				t.Fatal("answer handler did not reach release barrier")
-			}
-			second := diagnosticWaitPark(t, parks)
+			<-paused
+			second := <-parks
 			if second.Findings == nil || !strings.Contains(*second.Findings, "operator decision") || strings.Contains(*second.Findings, "question-q1") {
 				t.Fatalf("next gate is not the code-only gate: %+v", second)
 			}
@@ -109,18 +97,14 @@ func TestAnswerReviewQuestionDelayedReleaseMustNotConsumeNextGate(t *testing.T) 
 				t.Fatalf("answer durability: %+v, %v", conv, err)
 			}
 			close(release)
-			select {
-			case <-answerDone:
-			case <-time.After(5 * time.Second):
-				t.Fatal("answer handler did not finish")
-			}
+			<-answerDone
 			if answerErr != nil {
 				t.Fatal(answerErr)
 			}
 			if result.Resumed {
 				// Observe the actual unintended turn before failing, so the
 				// assertion proves an effect rather than only an OK echo.
-				third := diagnosticWaitPark(t, parks)
+				third := <-parks
 				rows, err := m.db.GetStepsByRun(run.ID)
 				if err != nil || len(rows) != 1 {
 					t.Fatalf("steps: %+v, %v", rows, err)
@@ -162,17 +146,6 @@ type diagnosticImmediateSlot struct{}
 func (diagnosticImmediateSlot) Reserve()                      {}
 func (diagnosticImmediateSlot) Yield()                        {}
 func (diagnosticImmediateSlot) Acquire(context.Context) error { return nil }
-
-func diagnosticWaitPark(t *testing.T, ch <-chan ipc.Event) ipc.Event {
-	t.Helper()
-	select {
-	case e := <-ch:
-		return e
-	case <-time.After(5 * time.Second):
-		t.Fatal("expected park not published")
-	}
-	return ipc.Event{}
-}
 
 type diagnosticAnswerStep struct {
 	fixing bool

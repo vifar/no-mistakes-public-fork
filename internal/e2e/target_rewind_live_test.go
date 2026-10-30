@@ -23,7 +23,7 @@ func TestTargetAdvanceAdditionalPreservationJourney(t *testing.T) {
 			t.Run(strategy+"/"+kind, func(t *testing.T) {
 				h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: cleanReviewScenario(t)})
 				script := filepath.Join(t.TempDir(), "advance.sh")
-				commitTrustedRepoConfig(t, h, fmt.Sprintf("commands:\n  test: %q\nrebase:\n  strategy: %s\nauto_fix:\n  rebase: 0\n", "sh "+shellQuote(script), strategy))
+				commitTrustedRepoConfig(t, h, fmt.Sprintf("commands:\n  test: %q\nrebase:\n  integrate: always\n  strategy: %s\nauto_fix:\n  rebase: 0\n", "sh "+shellQuote(script), strategy))
 				base := h.UpstreamBranchSHA("main")
 				targetPath := "landed.txt"
 				if kind == "source then conflict" {
@@ -117,7 +117,7 @@ func targetAdvanceCustomGateJourney(t *testing.T, recover bool) {
 	scenario := cleanReviewScenario(t)
 	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: scenario})
 	count := filepath.Join(t.TempDir(), "gate-invocations")
-	extra := fmt.Sprintf("commands:\n  test: 'false'\n  lint: 'true'\ngates:\n  - name: audit\n    after: review\n    command: %q\nauto_fix:\n  test: 0\n  gates:\n    audit: 0\n", "printf 'invoked\\n' >> "+shellQuote(count)+"; exit 1")
+	extra := fmt.Sprintf("rebase:\n  integrate: always\ncommands:\n  test: 'false'\n  lint: 'true'\ngates:\n  - name: audit\n    after: review\n    command: %q\nauto_fix:\n  test: 0\n  gates:\n    audit: 0\n", "printf 'invoked\\n' >> "+shellQuote(count)+"; exit 1")
 	commitTrustedRepoConfig(t, h, extra)
 	base := h.UpstreamBranchSHA("main")
 	target := h.CommitChange("main", "landed.txt", "landed target\n", "prepare target advance")

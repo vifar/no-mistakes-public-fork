@@ -26,12 +26,13 @@ func TestTargetComparisonAdvancedNamesExactlyOneCondition(t *testing.T) {
 		mutate     func(t *testing.T, sctx *pipeline.StepContext, host *mutationComparisonHost)
 		wantTarget bool
 	}{
+		// A target the head conflicts with: a pure advance is held (#237).
 		{name: "moved target", mutate: func(t *testing.T, sctx *pipeline.StepContext, _ *mutationComparisonHost) {
 			gitCmd(t, sctx.WorkDir, "checkout", "main")
-			if err := os.WriteFile(filepath.Join(sctx.WorkDir, "advance.md"), []byte("target moved\n"), 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(sctx.WorkDir, "feature.txt"), []byte("target moved\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			gitCmd(t, sctx.WorkDir, "add", "advance.md")
+			gitCmd(t, sctx.WorkDir, "add", "feature.txt")
 			gitCmd(t, sctx.WorkDir, "commit", "-m", "advance target")
 			gitCmd(t, sctx.WorkDir, "checkout", "feature")
 		}, wantTarget: true},

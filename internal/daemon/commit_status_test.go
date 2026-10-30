@@ -550,7 +550,9 @@ func TestRecoverCommitStatusPushAttempt(t *testing.T) {
 			}))
 			defer server.Close()
 			t.Setenv("FAKE_CLI_STATUS_API_URL", server.URL)
-			reportRecoveredCommitStatuses(context.Background(), d, p, NewRunManager(d, p, nil), nil, 3*time.Second)
+			// This asserts recovery state, not latency; use the startup budget
+			// so a loaded race runner cannot turn a valid attempt into no POST.
+			reportRecoveredCommitStatuses(context.Background(), d, p, NewRunManager(d, p, nil), nil, recoveryCommitStatusTimeout)
 			mu.Lock()
 			defer mu.Unlock()
 			if scenario == "pushed" {

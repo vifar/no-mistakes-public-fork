@@ -1140,6 +1140,22 @@ rebase:
 
 A value in the trusted repository config overrides this global value in both directions. When the trusted repository config omits the key, this global value applies. An unrecognized value fails the config closed rather than falling back to the default, so a typo cannot quietly keep rewriting history a maintainer asked to stop rewriting.
 
+### rebase.integrate
+
+The operator-level default for [`rebase.integrate`](/no-mistakes/reference/repo-config/#rebaseintegrate), whose repository reference owns the integration policy and trust boundary.
+
+| | |
+|---|---|
+| Type | `string` (`on-conflict` or `always`) |
+| Default | `on-conflict` |
+
+```yaml
+rebase:
+  integrate: always
+```
+
+A value in the trusted repository config overrides this global value. When the trusted repository omits the key, this value applies. An unrecognized value fails configuration loading closed.
+
 ### rebase.max_target_advance_rewinds
 
 Operator-level default for the [per-run target-advance rewind limit](/no-mistakes/reference/repo-config/#rebasemax_target_advance_rewinds). The default is `3`; `0` disables rewinds, and negative values are rejected. A value in the trusted repository configuration overrides this global value.

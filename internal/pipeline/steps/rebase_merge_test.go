@@ -86,6 +86,9 @@ func (f mergeFixture) context(t *testing.T, ag agent.Agent, strategy string) *pi
 	if strategy != "" {
 		sctx.Config.Rebase.Strategy = strategy
 	}
+	// The fixture's base move is clean; these tests pin the integration
+	// SHAPE, so they integrate every moved base (#237 keeps clean heads).
+	sctx.Config.Rebase.Integrate = config.RebaseIntegrateAlways
 	return sctx
 }
 

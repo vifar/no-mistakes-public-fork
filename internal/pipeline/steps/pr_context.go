@@ -369,6 +369,18 @@ func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName
 	if pending != nil && !samePendingRewindIdentity(sctx, pending, previous, candidate, selection) {
 		return pipeline.PRContextDecision{}, fmt.Errorf("PR comparison changed during pending rewind; start a new run")
 	}
+	// A target that only moved is not drift (#237): when the head still merges
+	// cleanly and the advance leaves its own diff unchanged, the comparison is
+	// held at the recorded target and every rule below sees no target change.
+	// Strict and published runs included - nothing they validated moved.
+	heldAdvance := false
+	var held db.PRContextCandidate
+	if previous != nil && pending == nil && previous.TargetBranch == candidate.TargetBranch && previous.TargetSHA != candidate.TargetSHA {
+		var holdErr error
+		if held, heldAdvance, holdErr = holdReceiptTargetAdvance(sctx, previous, candidate); holdErr != nil {
+			return pipeline.PRContextDecision{}, holdErr
+		}
+	}
 
 	eligible, eligibilityErr := sctx.DB.CanRewindTarget(sctx.Run.ID, step)
 	eligible = eligible && sctx.Run.Shipping == nil
@@ -382,14 +394,22 @@ func guardPRContextWithSelection(sctx *pipeline.StepContext, step types.StepName
 		return pipeline.PRContextDecision{}, err
 	}
 	if (targetChanged || retainedTarget != "") && !eligible && previous != nil {
+		// A qualified published head records the advanced target it was
+		// verified against, which a rebase-merged result needs at the end;
+		// that path runs first. What it declines or cannot read, a held pure
+		// advance still carries (#237).
 		host, _ := buildHost(sctx, resolvedProvider(sctx))
 		keep, err := retainPublishedComparison(sctx, host, previous, candidate)
-		if err != nil {
+		if err != nil && !heldAdvance {
 			return pipeline.PRContextDecision{}, err
 		}
-		if keep {
+		if keep && err == nil {
 			return pipeline.PRContextDecision{Target: selection}, nil
 		}
+	}
+	if heldAdvance {
+		candidate = held
+		targetChanged = false
 	}
 	if pending != nil || targetChanged && !(freshRetarget && previous.TargetBranch != candidate.TargetBranch) && eligible {
 		observed, cleanup, observeErr := observeRewindRemotes(sctx, selection.TargetBranch, previous.Generation)
@@ -706,7 +726,20 @@ func verifyPRMutationComparison(sctx *pipeline.StepContext, host scm.Host, pr *s
 	expected := receipt.PRContextCandidate
 	expected.PRURL, expected.SourceRepo, expected.SourceBranch, expected.ForgeHeadSHA = "", "", "", ""
 	if current != expected {
-		return fmt.Errorf("%w: live target commit, merge base, or diff differs from PR comparison receipt before update", errTargetComparisonAdvanced)
+		held, pure, err := holdReceiptTargetAdvance(sctx, receipt, current)
+		if err != nil {
+			return err
+		}
+		// The head about to be published must merge cleanly as well, not
+		// only the receipt head it descends from.
+		if pure && proposedHead != receipt.LocalHeadSHA {
+			if pure, err = git.MergesCleanly(sctx.Ctx, sctx.WorkDir, current.TargetSHA, proposedHead); err != nil {
+				return err
+			}
+		}
+		if !pure || held != expected {
+			return fmt.Errorf("%w: live target commit, merge base, or diff differs from PR comparison receipt before update", errTargetComparisonAdvanced)
+		}
 	}
 	return nil
 }
@@ -733,6 +766,15 @@ func verifyCurrentPRComparison(sctx *pipeline.StepContext, host scm.Host, select
 		retainedTarget, err := sctx.DB.GetRetainedPRTarget(sctx.Run.ID, receipt)
 		if err != nil {
 			return err
+		}
+		if current != expected {
+			held, pure, err := holdReceiptTargetAdvance(sctx, receipt, current)
+			if err != nil {
+				return err
+			}
+			if pure && held == expected {
+				return nil
+			}
 		}
 		if current != expected || retainedTarget != "" {
 			candidate := current
@@ -809,7 +851,69 @@ func verifyCurrentPRComparison(sctx *pipeline.StepContext, host scm.Host, select
 		return fmt.Errorf("read merged PR result tree: %w", err)
 	}
 	if mergeTree != actualTree {
-		return fmt.Errorf("merged PR tree differs from the reviewed comparison result")
+		proven, err := mergedOntoAdvancedTarget(sctx, receipt, mergeSHA, actualTree)
+		if err != nil {
+			return err
+		}
+		if !proven {
+			return fmt.Errorf("merged PR tree differs from the reviewed comparison result")
+		}
 	}
 	return nil
+}
+
+// mergedOntoAdvancedTarget proves a merged PR whose target moved after the
+// run last compared it (#161, #237). Other merges can land between this run's
+// last check and its own, so the forge merges the reviewed head onto a newer
+// target than the receipt names. The merge commit's first parent IS that
+// target as the forge saw it. Only on-conflict permits this fallback. The
+// parent must purely advance the latest retained target (or the reviewed
+// target without one): fast-forward, unchanged merge base, clean merge.
+// The forward merge must reproduce the result tree, and reversing the
+// reviewed change out of that result must reproduce the parent's tree.
+// Both are necessary: the reverse proof rejects partial replays without
+// requiring identical diff blob IDs or context after clean target edits.
+// A merge commit without that parent shape (a rebase merge's last replayed
+// commit, for one) fails closed.
+func mergedOntoAdvancedTarget(sctx *pipeline.StepContext, receipt *db.PRContext, mergeSHA, actualTree string) (bool, error) {
+	if !keepsCleanHeads(sctx) {
+		return false, nil
+	}
+	parent, err := git.Run(sctx.Ctx, sctx.WorkDir, "rev-parse", "--verify", "--quiet", mergeSHA+"^1^{commit}")
+	if err != nil || parent == "" {
+		return false, nil
+	}
+	floor, err := sctx.DB.GetRetainedPRTarget(sctx.Run.ID, receipt)
+	if err != nil {
+		return false, err
+	}
+	if floor == "" {
+		floor = receipt.TargetSHA
+	}
+	pure, err := git.TargetAdvancedCleanly(sctx.Ctx, sctx.WorkDir, floor, parent, receipt.LocalHeadSHA, receipt.MergeBaseSHA)
+	if err != nil || !pure {
+		return false, err
+	}
+	tree, err := git.Run(sctx.Ctx, sctx.WorkDir, "merge-tree", "--write-tree", parent, receipt.LocalHeadSHA)
+	if err != nil {
+		return false, fmt.Errorf("cannot prove the merged result on the advanced target: %w", err)
+	}
+	if tree != actualTree {
+		return false, nil
+	}
+	reversed, err := git.Run(sctx.Ctx, sctx.WorkDir, "merge-tree", "--write-tree", "--merge-base="+receipt.LocalHeadSHA, mergeSHA, receipt.MergeBaseSHA)
+	if err != nil {
+		return false, fmt.Errorf("cannot reverse the reviewed change from the merged result: %w", err)
+	}
+	parentTree, err := git.Run(sctx.Ctx, sctx.WorkDir, "rev-parse", parent+"^{tree}")
+	if err != nil {
+		return false, fmt.Errorf("read the merge parent's tree: %w", err)
+	}
+	if reversed != parentTree {
+		return false, nil
+	}
+	if sctx.Log != nil {
+		sctx.Log(fmt.Sprintf("merged PR landed exactly the reviewed change on advanced target %s; tree %s matches", shortSHA(parent), shortSHA(actualTree)))
+	}
+	return true, nil
 }

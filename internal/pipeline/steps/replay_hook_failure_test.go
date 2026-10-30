@@ -30,7 +30,7 @@ func TestReplayMappingAfterOriginalHookFailure(t *testing.T) {
 				gitCmd(t, f.dir, "reset", "--hard", f.baseSHA)
 				c.Run.HeadSHA = f.baseSHA
 				c.Run.SubmittedHeadSHA = &f.baseSHA
-				if err := rebaseWithAgent(c.Ctx, c, "origin/imported"); err != nil {
+				if err := rebaseWithAgent(c.Ctx, c, "origin/imported", false); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := updateHeadSHA(c.Ctx, c, "main"); err != nil {
@@ -49,7 +49,7 @@ func TestReplayMappingAfterOriginalHookFailure(t *testing.T) {
 			gitCmd(t, f.dir, "config", "core.hooksPath", hooks)
 			for round := 0; round < 2; round++ {
 				old := gitCmd(t, f.dir, "rev-parse", "HEAD")
-				if err := rebaseWithAgent(c.Ctx, c, "origin/main"); err != nil {
+				if err := rebaseWithAgent(c.Ctx, c, "origin/main", false); err != nil {
 					t.Fatal(err)
 				}
 				next := gitCmd(t, f.dir, "rev-parse", "HEAD")

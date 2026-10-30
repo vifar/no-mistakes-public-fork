@@ -59,11 +59,11 @@ func TestReplayProvenanceAutomaticPicks(t *testing.T) {
 				return nil, nil
 			}}, "rebase")
 			if entry == "automatic" {
-				if conflicts, err := tryRebase(c.Ctx, c, "origin/main"); err != nil || len(conflicts) != 0 {
+				if conflicts, err := tryRebase(c.Ctx, c, "origin/main", false); err != nil || len(conflicts) != 0 {
 					t.Fatalf("automatic rebase = %v, %v", conflicts, err)
 				}
 			} else {
-				if err := rebaseWithAgent(c.Ctx, c, "origin/main"); err != nil {
+				if err := rebaseWithAgent(c.Ctx, c, "origin/main", false); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -107,7 +107,7 @@ func TestReplayProvenanceCleanPickAfterConflict(t *testing.T) {
 		return &agent.Result{}, nil
 	}}
 	c := f.context(t, ag, "rebase")
-	if err := rebaseWithAgent(c.Ctx, c, "origin/main"); err != nil {
+	if err := rebaseWithAgent(c.Ctx, c, "origin/main", false); err != nil {
 		t.Error(err)
 	}
 }
@@ -126,7 +126,7 @@ func TestReplayProvenanceSuccessiveRebases(t *testing.T) {
 		return &agent.Result{}, nil
 	}}
 	c := f.context(t, ag, "rebase")
-	if err := rebaseWithAgent(c.Ctx, c, "origin/main"); err != nil {
+	if err := rebaseWithAgent(c.Ctx, c, "origin/main", false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := updateHeadSHA(c.Ctx, c, "main"); err != nil {
@@ -142,7 +142,7 @@ func TestReplayProvenanceSuccessiveRebases(t *testing.T) {
 	gitCmd(t, f.dir, "commit", "-m", "second upstream advance")
 	gitCmd(t, f.dir, "push", "origin", "main")
 	gitCmd(t, f.dir, "checkout", "feature")
-	if conflicts, err := tryRebase(c.Ctx, c, "origin/main"); err != nil || len(conflicts) != 0 {
+	if conflicts, err := tryRebase(c.Ctx, c, "origin/main", false); err != nil || len(conflicts) != 0 {
 		t.Fatalf("second rebase = %v, %v", conflicts, err)
 	}
 	if got := gitCmd(t, f.dir, "log", "-1", "--format=%B"); got != message {
@@ -179,7 +179,7 @@ func TestReplayProvenanceCopiedCorrectionDuringStop(t *testing.T) {
 		return &agent.Result{}, nil
 	}}
 	c := f.context(t, ag, "rebase")
-	if err := rebaseWithAgent(c.Ctx, c, "origin/main"); err != nil {
+	if err := rebaseWithAgent(c.Ctx, c, "origin/main", false); err != nil {
 		t.Error(err)
 	}
 }
@@ -209,19 +209,19 @@ func TestImportedProvenanceFastForward(t *testing.T) {
 			gitCmd(t, dir, "checkout", "feature")
 			switch entry {
 			case "automatic-rebase":
-				if _, err := tryRebase(c.Ctx, c, "origin/main"); err != nil {
+				if _, err := tryRebase(c.Ctx, c, "origin/main", false); err != nil {
 					t.Fatal(err)
 				}
 			case "agent-rebase":
-				if err := rebaseWithAgent(c.Ctx, c, "origin/main"); err != nil {
+				if err := rebaseWithAgent(c.Ctx, c, "origin/main", false); err != nil {
 					t.Fatal(err)
 				}
 			case "automatic-merge":
-				if _, err := tryMerge(c.Ctx, c, "origin/main"); err != nil {
+				if _, err := tryMerge(c.Ctx, c, "origin/main", false); err != nil {
 					t.Fatal(err)
 				}
 			case "agent-merge":
-				if err := mergeWithAgent(c.Ctx, c, "origin/main"); err != nil {
+				if err := mergeWithAgent(c.Ctx, c, "origin/main", false); err != nil {
 					t.Fatal(err)
 				}
 			}

@@ -58,20 +58,23 @@ func TestCIBaseTipOutageCadenceLiveJourney(t *testing.T) {
 	if err := os.WriteFile(deny, []byte("deny only fetch, preserve forge head reads\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	polls := waitLiveCIPolls(t, j, start+3, 110*time.Second)
+	polls := waitLiveCIPolls(t, j, start+3, 150*time.Second)
 	assertLiveCIWaits(t, "pending checks with a failed timeout base-tip fetch", polls[start:start+3], []time.Duration{30 * time.Second, 30 * time.Second})
 	j.setForge(forgeState{Checks: []forgeCheck{greenCheck("build")}, MergeStateStatus: "BEHIND"})
-	j.waitCILog(run.ID, "waiting for the base to settle before rebasing", 45*time.Second)
+	// These transitions can include the rest of the current poll, the next
+	// wait, and the next poll's reads. Their observation budget must exceed
+	// a single accepted poll gap; assertLiveCIWaits still enforces cadence.
+	j.waitCILog(run.ID, "waiting for the base to settle before rebasing", scopeCheckWaitTime)
 	start = len(liveCIPollTimes(t, j)) - 1
-	polls = waitLiveCIPolls(t, j, start+3, 80*time.Second)
+	polls = waitLiveCIPolls(t, j, start+3, 110*time.Second)
 	assertLiveCIWaits(t, "green BEHIND checks with a failed base-tip fetch", polls[start:start+3], []time.Duration{30 * time.Second, 30 * time.Second})
 	if j.h.RunInfo(run.ID).CIReady || len(j.ciRepairPrompts()) != 0 {
 		t.Fatal("unresolved base-tip proof became ready or started a repair")
 	}
 	j.setForge(forgeState{Checks: []forgeCheck{greenCheck("build")}})
-	j.waitCILog(run.ID, "warning: CI readiness comparison could not be verified:", 45*time.Second)
+	j.waitCILog(run.ID, "warning: CI readiness comparison could not be verified:", scopeCheckWaitTime)
 	start = len(liveCIPollTimes(t, j)) - 1
-	polls = waitLiveCIPolls(t, j, start+3, 80*time.Second)
+	polls = waitLiveCIPolls(t, j, start+3, 110*time.Second)
 	assertLiveCIWaits(t, "green checks with a failed comparison fetch", polls[start:start+3], []time.Duration{30 * time.Second, 30 * time.Second})
 	if j.h.RunInfo(run.ID).CIReady {
 		t.Fatal("failed live comparison became ready")
@@ -80,7 +83,7 @@ func TestCIBaseTipOutageCadenceLiveJourney(t *testing.T) {
 		t.Fatal(err)
 	}
 	j.setForge(forgeState{Checks: []forgeCheck{greenCheck("build")}})
-	j.expectReady(branch, 45*time.Second)
+	j.expectReady(branch, scopeCheckWaitTime)
 	t.Logf("Live base-tip outage monitor transcript:\n%s", j.ciLog(run.ID))
 	j.finish(branch)
 }

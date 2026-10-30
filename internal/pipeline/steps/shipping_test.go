@@ -92,6 +92,9 @@ func TestShippingPublicationRefusesMovedReviewTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	sctx.Run = run
+	// Pins the integrate-every-move path; a clean advance under the default
+	// keeps the approved comparison (shipping.TargetAdvancedCleanly, #237).
+	sctx.Config.Rebase.Integrate = config.RebaseIntegrateAlways
 	c, err := sctx.DB.CaptureReviewComparison(run.ID, db.ReviewComparison{SourceRepo: "owner/project", SourceBranch: "feature", TargetBranch: "main", TargetSHA: base, HeadSHA: head, MergeBaseSHA: base, DiffDigest: strings.Repeat("b", 64)})
 	if err != nil {
 		t.Fatal(err)
@@ -252,6 +255,9 @@ func TestShippingReviewRestartsRebaseForAdvanceBeforeCapture(t *testing.T) {
 		return &agent.Result{Output: raw}, nil
 	}}
 	sctx := newTestContextWithDBRecords(t, ag, dir, base, head, config.Commands{})
+	// Exercises the integrate-every-move comparison machinery; under the
+	// default a clean target advance is held instead (#237).
+	sctx.Config.Rebase.Integrate = config.RebaseIntegrateAlways
 	run, err := sctx.DB.InsertRunWithShipping(sctx.Repo.ID, "feature", head, base, nil, "", "", "", "main", false, nil, &types.ShippingOptions{Mode: types.ShippingFull})
 	if err != nil {
 		t.Fatal(err)

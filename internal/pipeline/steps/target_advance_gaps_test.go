@@ -359,6 +359,9 @@ func TestTargetAdvanceRetainsHumanDecisionsInPrompts(t *testing.T) {
 func TestTargetAdvanceInitiallyUnattachedExistingPR(t *testing.T) {
 	dir, base, head := setupGitRepo(t)
 	c := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
+	// Exercises the integrate-every-move comparison machinery; under the
+	// default a clean target advance is held instead (#237).
+	c.Config.Rebase.Integrate = config.RebaseIntegrateAlways
 	remote := filepath.Join(t.TempDir(), "upstream.git")
 	gitCmd(t, dir, "clone", "--bare", dir, remote)
 	gitCmd(t, dir, "remote", "set-url", "origin", remote)

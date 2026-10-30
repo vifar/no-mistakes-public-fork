@@ -29,7 +29,7 @@ func TestReviewPostMergeStaleSnapshotJourney(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			h := NewHarness(t, SetupOpts{Agent: "claude"})
-			commitTrustedRepoConfig(t, h, "rebase:\n  strategy: merge\n")
+			commitTrustedRepoConfig(t, h, "rebase:\n  integrate: always\n  strategy: merge\n")
 			initFromOwnWorktree(t, h, "init-review-head")
 			const branch = "feature/review-head"
 			submitted := h.CommitChange(branch, "feature.txt", "feature work\n", "add feature work")

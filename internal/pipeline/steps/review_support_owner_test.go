@@ -132,6 +132,9 @@ func completedReviewSupportFixture(t *testing.T, claim Finding) (*pipeline.StepC
 	t.Helper()
 	dir, base, head := setupGitRepo(t)
 	sctx := newTestContextWithDBRecords(t, nil, dir, base, head, config.Commands{})
+	// Exercises the integrate-every-move comparison machinery; under the
+	// default a clean target advance is held instead (#237).
+	sctx.Config.Rebase.Integrate = config.RebaseIntegrateAlways
 	candidate, err := readPRComparison(sctx, pipeline.PRTargetSelection{TargetBranch: "main"})
 	if err != nil {
 		t.Fatal(err)
@@ -462,6 +465,9 @@ func TestCIOwnerProvesMergedResultOnAdvancedTarget(t *testing.T) {
 func TestCIOwnerResolvesPublishedForwardClaimWithoutRelabeling(t *testing.T) {
 	dir, base, reviewed := setupGitRepo(t)
 	sctx := newTestContextWithDBRecords(t, nil, dir, base, reviewed, config.Commands{})
+	// Exercises the integrate-every-move comparison machinery; under the
+	// default a clean target advance is held instead (#237).
+	sctx.Config.Rebase.Integrate = config.RebaseIntegrateAlways
 	sctx.Repo.UpstreamURL = dir
 	sctx.ForgeContext = &forgecontext.Context{Provider: scm.ProviderBitbucket}
 	candidate, err := readPRComparison(sctx, pipeline.PRTargetSelection{TargetBranch: "main"})

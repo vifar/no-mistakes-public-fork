@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"gopkg.in/yaml.v3"
 )
@@ -337,8 +338,38 @@ func TestReviewFixOversizedSummaryLiveJourney(t *testing.T) {
 	if run.Status != types.RunFailed || run.Error == nil || !strings.Contains(*run.Error, "commit summary must not exceed 4096 bytes") {
 		t.Fatalf("oversized report outcome = %s, error=%v", run.Status, deref(run.Error))
 	}
+	// Check the recorded outcome as well as the durable restored head.
 	if run.HeadSHA != submitted {
 		t.Fatalf("rejected repair changed recorded HEAD: %s, want %s", run.HeadSHA, submitted)
+	}
+	// Terminal cleanup can remove the worktree before WaitForRun returns.
+	// The unchanged submitted head remains on the gate branch without a
+	// recovery ref.
+	gate := "--git-dir=" + paths.WithRoot(h.NMHome).RepoDir(run.RepoID)
+	head := gitIn(t, h, h.WorkDir, gate, "rev-parse", "refs/heads/"+branch)
+	if head != submitted {
+		t.Fatalf("rejected repair changed preserved HEAD: %s, want %s", head, submitted)
+	}
+	content, err := h.runGit(t.Context(), h.WorkDir, gate, "show", head+":feature.txt")
+	if err != nil || string(content) != "unsafe\n" {
+		t.Fatalf("rejected repair was not discarded: %q, %v", content, err)
+	}
+	// Any retained worktree must also have no edits or index changes.
+	// Allow terminal cleanup to finish if it races the status command.
+	worktree := paths.WithRoot(h.NMHome).WorktreeDir(run.RepoID, run.ID)
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		status, statusErr := h.runGit(t.Context(), worktree, "status", "--porcelain")
+		if statusErr == nil && len(status) == 0 {
+			break
+		}
+		if _, statErr := os.Stat(worktree); os.IsNotExist(statErr) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("rejected repair left edits or index changes: %q, %v", status, statusErr)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	if out, err := h.runGit(t.Context(), h.UpstreamDir, "show-ref", "--verify", "refs/heads/"+branch); err == nil {
 		t.Fatalf("rejected repair was published: %s", out)
@@ -348,5 +379,5 @@ func TestReviewFixOversizedSummaryLiveJourney(t *testing.T) {
 		t.Fatalf("observe rejected run: %v\n%s", err, out)
 	}
 	t.Logf("no-mistakes axi status:\n%s", out)
-	t.Logf("Rejected 4097-byte report: %s\nRecorded HEAD unchanged at %s; disposable upstream has no branch.", *run.Error, submitted)
+	t.Logf("Rejected 4097-byte report: %s\nRestored feature.txt: %q\nPreserved HEAD unchanged at %s; disposable upstream has no branch.", *run.Error, content, submitted)
 }

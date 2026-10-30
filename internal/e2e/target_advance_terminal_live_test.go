@@ -17,7 +17,8 @@ import (
 
 // The acceptance oracle is a terminal completed run at the original qualified
 // comparison after the forge reports an exact, independently constructed Git
-// merge. A corrupt result or an unobserved advanced target must fail closed.
+// merge. Issue #161 also permits an unobserved pure advance proven by the
+// merge's first parent; a corrupt result or moved merge base must fail closed.
 // Only the external forge and agent are simulated; the binary, daemon,
 // readiness transitions, comparison persistence, and terminal guard are real.
 func TestTargetAdvanceTerminalMergeLiveJourney(t *testing.T) {
@@ -26,7 +27,7 @@ func TestTargetAdvanceTerminalMergeLiveJourney(t *testing.T) {
 			mode := strings.TrimPrefix(name, "stacked ")
 			stacked := mode != name
 			j := newScopeJourney(t, SetupOpts{Agent: "claude", Scenario: cleanReviewScenario(t)})
-			j.setTrusted("commands:\n  test: 'true'\n  lint: 'true'\n")
+			j.setTrusted("rebase:\n  integrate: always\ncommands:\n  test: 'true'\n  lint: 'true'\n")
 			healthy := forgeState{Protection: &forgeEndpoint{Body: []byte(`{"strict":false,"contexts":[],"checks":[]}`)}, Checks: []forgeCheck{greenCheck("build")}}
 			j.setForge(healthy)
 			j.init()

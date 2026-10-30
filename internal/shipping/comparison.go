@@ -55,9 +55,46 @@ func Compare(ctx context.Context, dir, targetSHA, head string) (string, string, 
 	return base, Digest([]byte(raw)), nil
 }
 
-func Capture(ctx context.Context, database *db.DB, repo *db.Repo, run *db.Run, dir, target string) (*db.ReviewComparison, error) {
+// TargetIntegrated reports whether a strict full comparison has integrated its
+// target: the target is the merge base, or - when keepClean (rebase.integrate:
+// on-conflict) - the head merges into it without a conflict. A pull request
+// merges from its own head, so a head that merges cleanly is shipped as it is
+// rather than rebased (issue #237).
+func TargetIntegrated(ctx context.Context, dir, targetSHA, mergeBase, head string, keepClean bool) (bool, error) {
+	if mergeBase == targetSHA {
+		return true, nil
+	}
+	if !keepClean {
+		return false, nil
+	}
+	return git.MergesCleanly(ctx, dir, targetSHA, head)
+}
+
+// TargetAdvancedCleanly reports whether the live target tip is a pure advance
+// of the approved comparison c: a fast-forward of c's target that leaves the
+// approved head's merge base, and so its diff, unchanged, and that the head
+// still merges cleanly into. Only full shipping integrates a moving target;
+// an immutable source keeps its pinned target. The tip's objects are fetched
+// when missing (issue #237).
+func TargetAdvancedCleanly(ctx context.Context, dir, upstreamURL string, run *db.Run, c *db.ReviewComparison, tip string, keepClean bool) (bool, error) {
+	if !keepClean || run == nil || run.Shipping == nil || run.Shipping.Mode != types.ShippingFull || c == nil || tip == "" || tip == c.TargetSHA {
+		return false, nil
+	}
+	if _, err := git.Run(ctx, dir, "cat-file", "-e", tip+"^{commit}"); err != nil {
+		if _, err := git.RunNetwork(ctx, dir, "fetch", "--no-tags", "--no-write-fetch-head", upstreamURL, tip); err != nil {
+			return false, fmt.Errorf("fetch advanced shipping target: %w", err)
+		}
+	}
+	return git.TargetAdvancedCleanly(ctx, dir, c.TargetSHA, tip, c.HeadSHA, c.MergeBaseSHA)
+}
+
+func Capture(ctx context.Context, database *db.DB, repo *db.Repo, run *db.Run, dir, target string, keepClean bool) (*db.ReviewComparison, error) {
+	return capture(ctx, database, repo, run, dir, target, keepClean, RemoteHead)
+}
+
+func capture(ctx context.Context, database *db.DB, repo *db.Repo, run *db.Run, dir, target string, keepClean bool, remoteHead func(context.Context, string, string, string) (string, error)) (*db.ReviewComparison, error) {
 	upstreamURL := git.ResolveUpstreamURL(ctx, dir, repo.UpstreamURL, repo.URLsVerified)
-	tip, err := RemoteHead(ctx, dir, upstreamURL, target)
+	tip, err := remoteHead(ctx, dir, upstreamURL, target)
 	if err != nil {
 		return nil, err
 	}
@@ -72,15 +109,26 @@ func Capture(ctx context.Context, database *db.DB, repo *db.Repo, run *db.Run, d
 	if err != nil {
 		return nil, err
 	}
-	if after, err := RemoteHead(ctx, dir, upstreamURL, target); err != nil || after != tip {
-		return nil, fmt.Errorf("shipping target moved during review capture")
+	comparison := db.ReviewComparison{SourceRepo: github.RepoSlug(repo.PushURL()), SourceBranch: strings.TrimPrefix(run.Branch, "refs/heads/"), TargetBranch: target, TargetSHA: tip, HeadSHA: head, MergeBaseSHA: base, DiffDigest: digest}
+	after, err := remoteHead(ctx, dir, upstreamURL, target)
+	if err != nil {
+		return nil, err
+	}
+	if after != tip {
+		advanced, err := TargetAdvancedCleanly(ctx, dir, upstreamURL, run, &comparison, after, keepClean)
+		if err != nil {
+			return nil, err
+		}
+		if !advanced {
+			return nil, fmt.Errorf("shipping target moved during review capture")
+		}
 	}
 	if run.Shipping.Mode == types.ShippingImmutableSource {
 		if err := CheckImmutable(ctx, run, repo, dir); err != nil {
 			return nil, err
 		}
 	}
-	return database.CaptureReviewComparison(run.ID, db.ReviewComparison{SourceRepo: github.RepoSlug(repo.PushURL()), SourceBranch: strings.TrimPrefix(run.Branch, "refs/heads/"), TargetBranch: target, TargetSHA: tip, HeadSHA: head, MergeBaseSHA: base, DiffDigest: digest})
+	return database.CaptureReviewComparison(run.ID, comparison)
 }
 
 func CheckImmutableSource(ctx context.Context, run *db.Run, repo *db.Repo, dir string) error {

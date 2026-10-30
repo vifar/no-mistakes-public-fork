@@ -893,7 +893,15 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			if err != nil {
 				return nil, err
 			}
+			advanced := false
 			if tip != comparison.TargetSHA {
+				// A target that merely moved keeps the approved comparison
+				// and the CI already observed on its head (#237).
+				if advanced, err = shipping.TargetAdvancedCleanly(ctx, sctx.WorkDir, upstreamURL, sctx.Run, comparison, tip, keepsCleanHeads(sctx)); err != nil {
+					return nil, err
+				}
+			}
+			if tip != comparison.TargetSHA && !advanced {
 				if err := setCIMonitorReadiness(sctx, false, false); err != nil {
 					return nil, err
 				}
@@ -1453,8 +1461,18 @@ func verifyShippingMergedProof(sctx *pipeline.StepContext, host scm.Host, pr *sc
 	if err != nil {
 		return err
 	}
-	if c == nil || !c.Approved || c.HeadSHA != sctx.Run.HeadSHA || facts.State != scm.PRStateMerged || facts.URL != pr.URL || facts.HeadSHA != c.HeadSHA || facts.SourceRepo != c.SourceRepo || facts.SourceBranch != c.SourceBranch || facts.TargetBranch != c.TargetBranch || facts.TargetSHA != c.TargetSHA || facts.TargetRepo != github.RepoSlug(sctx.Repo.UpstreamURL) {
+	if c == nil || !c.Approved || c.HeadSHA != sctx.Run.HeadSHA || facts.State != scm.PRStateMerged || facts.URL != pr.URL || facts.HeadSHA != c.HeadSHA || facts.SourceRepo != c.SourceRepo || facts.SourceBranch != c.SourceBranch || facts.TargetBranch != c.TargetBranch || facts.TargetRepo != github.RepoSlug(sctx.Repo.UpstreamURL) {
 		return fmt.Errorf("merged PR differs from approved shipping comparison")
+	}
+	if facts.TargetSHA != c.TargetSHA {
+		upstreamURL := git.ResolveUpstreamURL(sctx.Ctx, sctx.WorkDir, sctx.Repo.UpstreamURL, sctx.Repo.URLsVerified)
+		advanced, err := shipping.TargetAdvancedCleanly(sctx.Ctx, sctx.WorkDir, upstreamURL, sctx.Run, c, facts.TargetSHA, keepsCleanHeads(sctx))
+		if err != nil {
+			return err
+		}
+		if !advanced {
+			return fmt.Errorf("merged PR differs from approved shipping comparison")
+		}
 	}
 	return shipping.CheckImmutableSource(sctx.Ctx, sctx.Run, sctx.Repo, sctx.WorkDir)
 }

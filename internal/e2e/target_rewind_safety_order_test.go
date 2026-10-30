@@ -36,7 +36,7 @@ func TestTargetAdvanceRewindSafetyOrderingJourney(t *testing.T) {
 					if !eligible {
 						limit = 0
 					}
-					commitTrustedRepoConfig(t, h, fmt.Sprintf("commands:\n  test: %q\nrebase:\n  strategy: %s\n  max_target_advance_rewinds: %d\nauto_fix:\n  rebase: 0\n", "sh "+shellQuote(script), strategy, limit))
+					commitTrustedRepoConfig(t, h, fmt.Sprintf("commands:\n  test: %q\nrebase:\n  integrate: always\n  strategy: %s\n  max_target_advance_rewinds: %d\nauto_fix:\n  rebase: 0\n", "sh "+shellQuote(script), strategy, limit))
 					base := h.UpstreamBranchSHA("main")
 					branch := "main"
 					if kind == "force-rewritten main" {

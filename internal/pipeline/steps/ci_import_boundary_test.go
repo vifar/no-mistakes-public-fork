@@ -16,7 +16,7 @@ func TestCIRepairImportsHeldTarget(t *testing.T) {
 		t.Run(integration, func(t *testing.T) {
 			f := newMergeFixture(t, false)
 			c := f.context(t, nil, integration)
-			if _, err := tryRebase(c.Ctx, c, "origin/main"); err != nil {
+			if _, err := tryRebase(c.Ctx, c, "origin/main", false); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := updateHeadSHA(c.Ctx, c, "main"); err != nil {

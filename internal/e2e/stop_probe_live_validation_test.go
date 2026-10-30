@@ -72,16 +72,12 @@ func TestDaemonStopLivePostKillProbe(t *testing.T) {
 			marker := filepath.Join(dir, "post-kill")
 			ack := filepath.Join(dir, "reaped")
 			t.Cleanup(func() { _ = os.WriteFile(ack, []byte("cleanup"), 0600) })
-			count := filepath.Join(dir, "count")
+			// Inject on the observed state, not on the number of probes after
+			// socket removal. Return that same sample on the pass-through path.
 			script := fmt.Sprintf(`#!/bin/sh
 if [ "$1" = '-p' ] && [ "$2" = '%d' ] && [ "$4" = 'stat=' ] && [ ! -S %s ]; then
- n=0
- [ ! -f %s ] || n=$(cat %s)
- n=$((n+1))
- echo "$n" > %s
- if [ "$n" -ge 3 ]; then
-  actual=$(/bin/ps "$@")
-  case "$actual" in *Z*) ;; *) echo "expected killed zombie, got $actual" >&2; exit 2;; esac
+ actual=$(/bin/ps "$@") || exit $?
+ case "$actual" in *Z*)
   echo "$actual" > %s
   case %s in
    exit-during-probe)
@@ -92,10 +88,12 @@ if [ "$1" = '-p' ] && [ "$2" = '%d' ] && [ "$4" = 'stat=' ] && [ ! -S %s ]; then
    probe-error) echo 'isolated probe access denied' >&2; exit 2;;
    reports-running) echo R; exit 0;;
   esac
- fi
+ ;; esac
+ printf '%%s\n' "$actual"
+ exit 0
 fi
 exec /bin/ps "$@"
-`, pid, shellQuote(p.Socket()), shellQuote(count), shellQuote(count), shellQuote(count), shellQuote(marker), shellQuote(mode), shellQuote(ack))
+`, pid, shellQuote(p.Socket()), shellQuote(marker), shellQuote(mode), shellQuote(ack))
 			if err := os.WriteFile(filepath.Join(dir, "ps"), []byte(script), 0700); err != nil {
 				t.Fatal(err)
 			}
