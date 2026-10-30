@@ -1567,6 +1567,11 @@ func TestSyncRecoverFlagValidation(t *testing.T) {
 		{"axi", "sync", "--recover", "--adopt-published"},
 		{"axi", "sync", "--keep-local"},
 		{"axi", "sync", "--bind-archive-ref", "refs/heads/archive/test", "--check"},
+		{"axi", "sync", "--adopt-preserved", "--acknowledge", strings.Repeat("a", 40)},
+		{"axi", "sync", "--recover", "--adopt-preserved"},
+		{"axi", "sync", "--recover", "--acknowledge", strings.Repeat("a", 40)},
+		{"axi", "sync", "--recover", "--adopt-preserved", "--keep-local", "--acknowledge", strings.Repeat("a", 40)},
+		{"axi", "sync", "--recover", "--keep-local", "--acknowledge", strings.Repeat("a", 40), "--authoritative-head", strings.Repeat("a", 40)},
 	} {
 		out, err := executeCmd(args...)
 		var ee *exitError

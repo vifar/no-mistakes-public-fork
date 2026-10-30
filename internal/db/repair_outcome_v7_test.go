@@ -71,7 +71,7 @@ func TestVersionSevenUpgradeKeepsEndingAndAddsRepairOutcome(t *testing.T) {
 		t.Fatalf("nullable repair evidence changed: %#v, %v", rounds, err)
 	}
 	var version int
-	if err := d.sql.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 8 {
-		t.Fatalf("upgraded version = %d, %v; want 8", version, err)
+	if err := d.sql.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != schemaVersion {
+		t.Fatalf("upgraded version = %d, %v; want %d", version, err, schemaVersion)
 	}
 }

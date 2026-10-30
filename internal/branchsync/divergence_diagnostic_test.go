@@ -168,7 +168,7 @@ func checkRecoverPatchMatchDiagnostic(t *testing.T, padding int) {
 	}
 	mustRun(t, f.gate, "update-ref", f.anchorRef(), f.preserved)
 	refused := f.service.Recover(f.ctx, false)
-	if refused.Safety != "blocked_recover_diverged" || refused.Recovered || refused.Changed || !strings.Contains(refused.Error, "the search was bounded") {
+	if refused.Safety != SafetyUnprovenDivergence || refused.Recovered || refused.Changed || !strings.Contains(refused.Error, "the search was bounded") {
 		t.Fatalf("bounded search refusal = %#v", refused)
 	}
 	if f.custodyReturned() || mustRun(t, f.local, "rev-parse", "HEAD") != f.localHead {
@@ -197,8 +197,12 @@ func assertRecoverPatchMatchDiagnostic(t *testing.T, f *rewrittenCopyFixture) {
 	t.Helper()
 	mustRun(t, f.gate, "update-ref", f.anchorRef(), f.preserved)
 
+	// The rewritten-copy fixture is a never-published run whose clean worktree
+	// sits at its submitted head, with the preserved head anchored in the gate:
+	// issue #233's acknowledged-exit class. Its refusal keeps every #151
+	// diagnostic below and reports the class's own safety code.
 	refused := f.service.Recover(f.ctx, false)
-	if refused.Recovered || refused.Changed || refused.Safety != "blocked_recover_diverged" {
+	if refused.Recovered || refused.Changed || refused.Safety != SafetyUnprovenDivergence {
 		t.Fatalf("recover diverged = %#v", refused)
 	}
 	t.Logf("refusal: %s", refused.Error)

@@ -27,8 +27,9 @@ var (
 // committed. Current opens execute no DDL or backfill DML.
 // Version 6 is allocated by the parallel upstream-sync migration, and version
 // 7 adds the ending audit column. Keep repair outcomes newer so databases at
-// either version also receive fix_applied.
-const schemaVersion = 8
+// either version also receive fix_applied. Version 9 adds the custody exit
+// record.
+const schemaVersion = 9
 
 // DB wraps a SQLite database connection.
 type DB struct {

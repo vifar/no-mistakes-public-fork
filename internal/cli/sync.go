@@ -3,12 +3,15 @@ package cli
 import (
 	"bufio"
 	"fmt"
+	"os"
+	"os/user"
 	"strings"
 	"time"
 
 	toON "github.com/toon-format/toon-go"
 
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/spf13/cobra"
@@ -79,8 +82,8 @@ func newSyncCmd() *cobra.Command {
 }
 
 func newAxiSyncCmd() *cobra.Command {
-	var check, recover, keepLocal, adoptPublished bool
-	var bindArchiveRef, authoritativeHead string
+	var check, recover, keepLocal, adoptPublished, adoptPreserved bool
+	var bindArchiveRef, authoritativeHead, acknowledge string
 	cmd := &cobra.Command{
 		Use:   "sync",
 		Short: "Check or apply guarded current-branch synchronization",
@@ -100,7 +103,13 @@ func newAxiSyncCmd() *cobra.Command {
 			"--adopt-published performs the guarded gate-lane recovery offered by\n" +
 			"next_action.code: adopt_published.\n" +
 			"--authoritative-head requires the registered worktree to already be at one exact\n" +
-			"full commit SHA before the guarded recovery runs; it never moves the worktree.",
+			"full commit SHA before the guarded recovery runs; it never moves the worktree.\n" +
+			"--acknowledge performs the explicit exit offered by next_action.code:\n" +
+			"choose_custody_exit, for a terminal run that published nothing and whose preserved\n" +
+			"head diverged from the submitted local head without a containment proof. It names\n" +
+			"the exact head being set aside: with --adopt-preserved the local head (the\n" +
+			"worktree and gate branch move to the preserved head), with --keep-local the\n" +
+			"preserved head. Both keep every commit anchored and record the choice in the run.",
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -117,6 +126,19 @@ func newAxiSyncCmd() *cobra.Command {
 			if authoritativeHead != "" && !recover {
 				return emitError(cmd, 2, "--authoritative-head requires --recover")
 			}
+			if adoptPreserved && (!recover || keepLocal) {
+				return emitError(cmd, 2, "--adopt-preserved requires --recover and cannot be combined with --keep-local")
+			}
+			if (adoptPreserved || acknowledge != "") && (acknowledge == "" || (!adoptPreserved && !keepLocal) || authoritativeHead != "" || bindArchiveRef != "") {
+				return emitError(cmd, 2, "--acknowledge requires --recover with exactly one of --adopt-preserved or --keep-local, and cannot be combined with --authoritative-head or --bind-archive-ref")
+			}
+			if acknowledge != "" {
+				mode := branchsync.CustodyExitKeepLocal
+				if adoptPreserved {
+					mode = branchsync.CustodyExitAdoptPreserved
+				}
+				return runAxiCustodyExit(cmd, branchsync.CustodyExitRequest{Mode: mode, Acknowledge: acknowledge, Invoker: custodyExitInvoker()})
+			}
 			return runAxiSync(cmd, check, recover, keepLocal, adoptPublished, bindArchiveRef, authoritativeHead)
 		},
 	}
@@ -126,7 +148,54 @@ func newAxiSyncCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&adoptPublished, "adopt-published", false, "adopt a clean diverged local head into its stale gate lane only when the configured push target already has that exact head")
 	cmd.Flags().StringVar(&bindArchiveRef, "bind-archive-ref", "", "bind one existing refs/heads/archive/* commit as exact keep-local recovery evidence without changing Git refs")
 	cmd.Flags().StringVar(&authoritativeHead, "authoritative-head", "", "with --recover: require the registered worktree to already be at this exact full commit SHA")
+	cmd.Flags().BoolVar(&adoptPreserved, "adopt-preserved", false, "with --recover --acknowledge <local head>: take the offered choose_custody_exit by moving the worktree and gate branch to the preserved head")
+	cmd.Flags().StringVar(&acknowledge, "acknowledge", "", "with --recover and --adopt-preserved or --keep-local: the exact full SHA of the head being set aside, acknowledging the commits listed by choose_custody_exit")
 	return cmd
+}
+
+// custodyExitInvoker names who took an acknowledged custody exit, for the
+// run's record: the documented owner identity when set, and the OS account.
+func custodyExitInvoker() string {
+	account := "unknown"
+	if current, err := user.Current(); err == nil {
+		account = current.Username
+	}
+	if owner := strings.TrimSpace(os.Getenv("NO_MISTAKES_OWNER")); owner != "" {
+		return "owner " + owner + " (user " + account + ")"
+	}
+	return "user " + account
+}
+
+func runAxiCustodyExit(cmd *cobra.Command, request branchsync.CustodyExitRequest) error {
+	started := time.Now()
+	mode := "exit_" + string(request.Mode)
+	var state branchsync.State
+	result := "error"
+	defer func() { trackSyncAttempt("axi-sync", "axi", mode, state, result, started) }()
+
+	service, closeFn, err := openSyncService()
+	if err != nil {
+		return emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
+	}
+	defer closeFn()
+	state = service.ExitTerminalDivergence(cmd.Context(), request)
+	fields := []toON.Field{branchSyncField(state)}
+	if state.Error != "" && !state.Recovered {
+		fields = append(fields, toON.Field{Key: "error", Value: state.Error})
+	}
+	if state.NextAction != nil {
+		fields = append(fields, toON.Field{Key: "help", Value: []string{"Run `" + state.NextAction.Command + "`"}})
+	}
+	emitDoc(cmd, fields...)
+	if !state.Recovered {
+		result = "refused"
+		return &exitError{code: 1}
+	}
+	result = "noop"
+	if state.Changed {
+		result = "applied"
+	}
+	return nil
 }
 
 func openSyncService() (*branchsync.Service, func(), error) {
@@ -649,6 +718,14 @@ func branchSyncField(state branchsync.State) toON.Field {
 			toON.Field{Key: "keep_local", Value: state.Recovery.KeepLocal},
 			toON.Field{Key: "proof", Value: state.Recovery.Proof},
 		)})
+		if state.Recovery.Source == branchsync.RecoverySourceTerminalDivergence {
+			fields = append(fields,
+				toON.Field{Key: "local_only", Value: custodyExitCommitRows(state.Recovery.LocalOnly)},
+				toON.Field{Key: "local_only_total", Value: state.Recovery.LocalOnlyTotal},
+				toON.Field{Key: "preserved_only", Value: custodyExitCommitRows(state.Recovery.PreservedOnly)},
+				toON.Field{Key: "preserved_only_total", Value: state.Recovery.PreservedOnlyTotal},
+			)
+		}
 	}
 	if state.Error != "" {
 		fields = append(fields, toON.Field{Key: "note", Value: state.Error})
@@ -660,6 +737,21 @@ func branchSyncField(state branchsync.State) toON.Field {
 		)})
 	}
 	return toON.Field{Key: "branch_sync", Value: toON.NewObject(fields...)}
+}
+
+type custodyExitCommitRow struct {
+	SHA        string `toon:"sha"`
+	Subject    string `toon:"subject"`
+	PatchID    string `toon:"patch_id"`
+	PatchMatch bool   `toon:"patch_match"`
+}
+
+func custodyExitCommitRows(commits []db.CustodyExitCommit) []custodyExitCommitRow {
+	rows := make([]custodyExitCommitRow, 0, len(commits))
+	for _, commit := range commits {
+		rows = append(rows, custodyExitCommitRow{SHA: commit.SHA, Subject: commit.Subject, PatchID: commit.PatchID, PatchMatch: commit.PatchMatch})
+	}
+	return rows
 }
 
 func cachedBranchSyncField(ctxCmd *cobra.Command, runID string) *toON.Field {

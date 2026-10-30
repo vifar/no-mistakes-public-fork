@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS runs (
     pi_profile           TEXT,
     verification_plan    TEXT,
     leftover_validation_commits INTEGER NOT NULL DEFAULT 0,
+    custody_exit         TEXT,
     created_at           INTEGER NOT NULL,
     updated_at           INTEGER NOT NULL
 );
@@ -577,4 +578,7 @@ var additiveMigrationStatements = []string{
 	// refused rather than looped on.
 	`ALTER TABLE runs ADD COLUMN leftover_validation_commits INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE step_rounds ADD COLUMN fix_applied INTEGER`,
+	// The audited record of an acknowledged custody exit (issue #233), written
+	// in the same statement that returns custody.
+	`ALTER TABLE runs ADD COLUMN custody_exit TEXT`,
 }

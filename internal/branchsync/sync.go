@@ -141,6 +141,12 @@ type RecoveryEvidence struct {
 	ArchiveRef    string
 	KeepLocal     bool
 	Proof         string
+	// LocalOnly and PreservedOnly name the commits each head lacks, for the
+	// terminal_divergence exit only; the totals count past the listing bound.
+	LocalOnly          []db.CustodyExitCommit
+	PreservedOnly      []db.CustodyExitCommit
+	LocalOnlyTotal     int
+	PreservedOnlyTotal int
 }
 
 // CanApply reports whether Apply may advance the clean checked-out branch for
@@ -883,7 +889,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_manual_reconciliation", "a stranded run has unverified or conflicting recovery evidence; reconcile it before returning branch custody")
 		}
 		if anyMissing {
-			return s.recoverKeepLocalAtCurrentHead(ctx, run, state, runIDs, candidateHeads)
+			return s.recoverKeepLocalAtCurrentHead(ctx, run, state, runIDs, candidateHeads, nil)
 		}
 	}
 	if run.TerminalHeadVerifiedAt == nil {
@@ -1015,9 +1021,9 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 			}
 		}
 		if keepLocal {
-			return s.finishKeepLocalRecover(ctx, state, []string{run.ID})
+			return s.finishKeepLocalRecover(ctx, state, []string{run.ID}, nil)
 		}
-		return s.finishRecover(ctx, run, false)
+		return s.finishRecover(ctx, run, false, nil)
 	}
 
 	if !gateAvailable {
@@ -1066,12 +1072,12 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		// Equal or ahead, discovered only after anchoring made the preserved
 		// head comparable locally.
 		if keepLocal {
-			return s.finishKeepLocalRecover(ctx, state, []string{run.ID})
+			return s.finishKeepLocalRecover(ctx, state, []string{run.ID}, nil)
 		}
-		return s.finishRecover(ctx, run, false)
+		return s.finishRecover(ctx, run, false, nil)
 	case isAncestor(ctx, wd, local, preserved):
 		if keepLocal {
-			return s.recoverKeepLocalAtCurrentHead(ctx, run, state, []string{run.ID}, []string{run.HeadSHA})
+			return s.recoverKeepLocalAtCurrentHead(ctx, run, state, []string{run.ID}, []string{run.HeadSHA}, nil)
 		}
 		if !state.Local.Clean {
 			state.Relation = RelationBehind
@@ -1081,10 +1087,20 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		}
 		return s.recoverFastForward(ctx, run, state, preserved)
 	default:
-		if keepLocal {
-			return s.recoverKeepLocalAtCurrentHead(ctx, run, state, []string{run.ID}, []string{run.HeadSHA})
+		proven := trustedEqualTreeRewrite || preservedContainsLocalWork(ctx, wd, local, preserved)
+		// Unproven divergence with complete evidence has two acknowledged
+		// exits and no default: neither plain recovery nor plain keep-local
+		// may choose a head for the operator (issue #233).
+		if source.divergence != nil && !proven {
+			blocked := source.divergence.apply(state)
+			blocked.Relation = RelationDiverged
+			blocked.Error = collectDivergenceDiagnostic(ctx, wd, local, preserved, "preserved pipeline head").divergenceDescription() + "; " + blocked.Error
+			return blocked
 		}
-		if trustedEqualTreeRewrite || preservedContainsLocalWork(ctx, wd, local, preserved) {
+		if keepLocal {
+			return s.recoverKeepLocalAtCurrentHead(ctx, run, state, []string{run.ID}, []string{run.HeadSHA}, nil)
+		}
+		if proven {
 			if !state.Local.Clean {
 				state.Relation = RelationDiverged
 				blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_dirty", fmt.Sprintf("the invoking worktree is not clean (%s); commit or stash first and re-run the recovery, or use --keep-local to return custody at the current head without moving the worktree; no files or refs were changed", state.Local.Reason))
@@ -1179,7 +1195,7 @@ func (s *Service) proveUnverifiedTerminalHead(ctx context.Context, state State, 
 // pipeline run. The preserved head stays reachable through the ordinary
 // recovery anchor. The archive-backed keep-local path lives in
 // recoverKeepLocalFromArchive so each signature's callers stay intact.
-func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State, gateHead string, runIDs, candidateHeads []string) State {
+func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State, gateHead string, runIDs, candidateHeads []string, exit *db.CustodyExit) State {
 	if s.beforeGateReset != nil {
 		s.beforeGateReset()
 	}
@@ -1261,14 +1277,15 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 	if err != nil || !exists || liveGateHead != state.Local.Head {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_race", "the gate branch changed while custody was being returned; custody was not recorded")
 	}
-	return s.finishKeepLocalRecover(ctx, state, runIDs)
+	return s.finishKeepLocalRecover(ctx, state, runIDs, exit)
 }
 
 // recoverKeepLocalAtCurrentHead returns custody at the current local head
 // without requiring a preserved pipeline object. --keep-local is the
 // operator's explicit discard of unpublished pipeline commits, so an absent
-// gate branch does not block it.
-func (s *Service) recoverKeepLocalAtCurrentHead(ctx context.Context, run *db.Run, state State, runIDs, candidateHeads []string) State {
+// gate branch does not block it. A non-nil exit is the acknowledged custody
+// exit recorded with the custody return.
+func (s *Service) recoverKeepLocalAtCurrentHead(ctx context.Context, run *db.Run, state State, runIDs, candidateHeads []string, exit *db.CustodyExit) State {
 	gateDir := strings.TrimSpace(s.GateDir)
 	if gateDir == "" {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", "no local gate is configured for this repository; custody was not recorded")
@@ -1281,9 +1298,9 @@ func (s *Service) recoverKeepLocalAtCurrentHead(ctx context.Context, run *db.Run
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", fmt.Sprintf("the local gate branch %s could not be inspected; no files or refs were changed", state.Local.Branch))
 	}
 	if !exists {
-		return s.recoverKeepLocal(ctx, run, state, "", runIDs, candidateHeads)
+		return s.recoverKeepLocal(ctx, run, state, "", runIDs, candidateHeads, exit)
 	}
-	return s.recoverKeepLocal(ctx, run, state, gateHead, runIDs, candidateHeads)
+	return s.recoverKeepLocal(ctx, run, state, gateHead, runIDs, candidateHeads, exit)
 }
 
 // recoverKeepLocalFromArchive is the keep-local-only archive path: it
@@ -1353,7 +1370,7 @@ func (s *Service) recoverKeepLocalFromArchive(ctx context.Context, run *db.Run, 
 		}
 		gateMoved = true
 	}
-	result := s.finishRecover(ctx, run, false)
+	result := s.finishRecover(ctx, run, false, nil)
 	if gateMoved && !result.Recovered {
 		branchRef := "refs/heads/" + state.Local.Branch
 		if _, err := git.Run(context.WithoutCancel(ctx), s.GateDir, "update-ref", branchRef, gateHead, state.Local.Head); err != nil {
@@ -1396,7 +1413,7 @@ func (s *Service) recoverFastForward(ctx context.Context, run *db.Run, state Sta
 		state.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
 		return state
 	}
-	return s.finishRecover(ctx, run, true)
+	return s.finishRecover(ctx, run, true, nil)
 }
 
 // preservedContainsLocalWork proves the preserved pipeline head already carries
@@ -1470,6 +1487,19 @@ func reviewedHeadProvesEquivalentTarget(ctx context.Context, dir, local, reviewe
 // and the pre-recovery head stays anchored. Custody is stamped only after the
 // whole move is verified.
 func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state State, preserved string, containmentProven bool) State {
+	moved, ok := s.adoptPreservedHead(ctx, run, state, preserved, containmentProven)
+	if !ok {
+		return moved
+	}
+	return s.finishRecover(ctx, run, true, nil)
+}
+
+// adoptPreservedHead performs recoverAdoptPreserved's guarded move without
+// stamping custody, reporting whether the clean worktree reached preserved.
+// containmentSettled skips the merge proof only for a caller that already
+// settled containment: proved it, or recorded the operator's acknowledgement of
+// what is left unproven (ExitTerminalDivergence).
+func (s *Service) adoptPreservedHead(ctx context.Context, run *db.Run, state State, preserved string, containmentSettled bool) (State, bool) {
 	if s.beforeRecoverWorktreeMove != nil {
 		s.beforeRecoverWorktreeMove()
 	}
@@ -1478,12 +1508,12 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 	head, headErr := git.HeadSHA(ctx, wd)
 	clean, _ := worktreeClean(ctx, wd)
 	if branchErr != nil || branch != state.Local.Branch || headErr != nil || head != state.Local.Head || !clean {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the local branch or worktree changed while custody was being returned; no files or refs were changed")
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the local branch or worktree changed while custody was being returned; no files or refs were changed"), false
 	}
 	// The containment proof runs before the anchor and the move so that no
 	// slow work sits between the last guard and the mutation.
-	if !containmentProven && !preservedContainsLocalWork(ctx, wd, head, preserved) {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the containment proof changed while custody was being returned; no files or refs were changed")
+	if !containmentSettled && !preservedContainsLocalWork(ctx, wd, head, preserved) {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the containment proof changed while custody was being returned; no files or refs were changed"), false
 	}
 	localAnchor := recoverLocalAnchorRef(run.ID)
 	// Create-only: an empty old value requires the ref not to exist. A resumed
@@ -1491,15 +1521,15 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 	// at any other commit is unexplained and refuses.
 	existingAnchor, existingErr := git.Run(ctx, wd, "rev-parse", "--verify", localAnchor+"^{commit}")
 	if existingErr == nil && existingAnchor != head {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the pre-recovery local head could not be anchored; no files or refs were changed")
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the pre-recovery local head could not be anchored; no files or refs were changed"), false
 	}
 	if existingErr != nil {
 		if err := custody.PreserveRecoveryAnchor(ctx, wd, localAnchor, head); err != nil {
-			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the pre-recovery local head could not be anchored; no files or refs were changed")
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the pre-recovery local head could not be anchored; no files or refs were changed"), false
 		}
 	}
 	if anchored, err := git.Run(ctx, wd, "rev-parse", localAnchor+"^{commit}"); err != nil || anchored != head {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the pre-recovery local head could not be verified after anchoring; no files or worktree refs were changed")
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the pre-recovery local head could not be verified after anchoring; no files or worktree refs were changed"), false
 	}
 
 	if s.beforeRecoverBranchMove != nil {
@@ -1508,10 +1538,10 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 	branchRef := "refs/heads/" + state.Local.Branch
 	boundaryBranch, boundaryErr := git.CurrentBranch(ctx, wd)
 	if boundaryErr != nil || boundaryBranch != state.Local.Branch {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the checked-out branch changed while custody was being returned; no branch or worktree changes were made")
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the checked-out branch changed while custody was being returned; no branch or worktree changes were made"), false
 	}
 	if _, err := git.Run(ctx, wd, "update-ref", branchRef, preserved, head); err != nil {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the local branch moved while custody was being returned; no files or refs were changed")
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the local branch moved while custody was being returned; no files or refs were changed"), false
 	}
 	if s.afterRecoverBranchMove != nil {
 		s.afterRecoverBranchMove()
@@ -1534,7 +1564,7 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 		if _, rollbackErr := git.Run(ctx, wd, "update-ref", branchRef, head, preserved); rollbackErr != nil {
 			rollbackDetail = fmt.Sprintf("; the branch could not be restored to %s and still requires manual reconciliation", head)
 		}
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", fmt.Sprintf("the checked-out branch changed while custody was being returned%s; custody was not recorded", rollbackDetail))
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", fmt.Sprintf("the checked-out branch changed while custody was being returned%s; custody was not recorded", rollbackDetail)), false
 	}
 	if _, err := git.Run(ctx, wd, "read-tree", "-m", "-u", head, preserved); err != nil {
 		rolledBack := ""
@@ -1543,7 +1573,7 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 		}
 		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_worktree_busy", fmt.Sprintf("the working tree changed while custody was being returned, so no file was overwritten%s; re-run the recovery once the working tree is settled", rolledBack))
 		blocked.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
-		return blocked
+		return blocked, false
 	}
 
 	finalHead, _ := git.HeadSHA(ctx, wd)
@@ -1555,7 +1585,7 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 	if finalHead != preserved {
 		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_apply_failed", fmt.Sprintf("adopting the preserved pipeline head did not reach it; final HEAD is %s and the pre-recovery head is anchored at %s; inspect the worktree before retrying", finalHead, localAnchor))
 		blocked.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
-		return blocked
+		return blocked, false
 	}
 	if !finalClean {
 		state.State = StateDirty
@@ -1563,9 +1593,9 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 		state.Safety = "blocked_post_recover_" + finalReason
 		state.Error = fmt.Sprintf("HEAD reached the preserved pipeline head, but the worktree is not clean; nothing was overwritten and the pre-recovery head is anchored at %s; custody was not recorded", localAnchor)
 		state.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
-		return state
+		return state, false
 	}
-	return s.finishRecover(ctx, run, true)
+	return state, true
 }
 
 // recoverRemoteRewritten owns Recover's outcome for a terminal run whose push
@@ -1833,8 +1863,14 @@ func (s *Service) anchorReachablePreserved(ctx context.Context, state State, run
 
 // finishRecover stamps custody returned and reports the fresh post-recovery
 // truth. changed reports whether this call moved the worktree HEAD.
-func (s *Service) finishRecover(ctx context.Context, run *db.Run, changed bool) State {
-	if err := s.DB.SetRunCustodyReturned(run.ID); err != nil {
+func (s *Service) finishRecover(ctx context.Context, run *db.Run, changed bool, exit *db.CustodyExit) State {
+	var err error
+	if exit != nil {
+		err = s.DB.ReturnRunCustodyWithExit(run.ID, *exit)
+	} else {
+		err = s.DB.SetRunCustodyReturned(run.ID)
+	}
+	if err != nil {
 		state, _, _ := s.inspect(ctx)
 		state.Changed = changed
 		state.Safety = "blocked_recover_stamp_failed"
@@ -1878,8 +1914,15 @@ func (s *Service) preserveKeepLocalCandidates(ctx context.Context, runIDs, candi
 	return nil
 }
 
-func (s *Service) finishKeepLocalRecover(ctx context.Context, state State, runIDs []string) State {
-	if err := s.DB.SetRunsCustodyReturned(runIDs); err != nil {
+func (s *Service) finishKeepLocalRecover(ctx context.Context, state State, runIDs []string, exit *db.CustodyExit) State {
+	var err error
+	if exit != nil {
+		// An acknowledged exit always returns exactly its own run.
+		err = s.DB.ReturnRunCustodyWithExit(runIDs[0], *exit)
+	} else {
+		err = s.DB.SetRunsCustodyReturned(runIDs)
+	}
+	if err != nil {
 		fresh, _, _ := s.inspect(ctx)
 		fresh.Changed = false
 		fresh.Safety = "blocked_recover_stamp_failed"
@@ -2501,6 +2544,10 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 			return
 		}
 		source := s.recoverySourceAvailable(ctx, state, run)
+		if source.divergence != nil {
+			*state = source.divergence.apply(*state)
+			return
+		}
 		if !source.available {
 			// A claimed archive owns its fail-closed proof codes. Ordinary
 			// discovery failures stay #958's inspect-and-reconcile offer so a
@@ -2512,6 +2559,9 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 			}
 			state.Safety = "blocked_recover_manual_reconciliation"
 			state.Error = "the run finished " + string(run.Status) + " but its preserved recovery evidence cannot be used safely; inspect and reconcile the recorded and live heads manually"
+			if source.reason != "" {
+				state.Error += "; no acknowledged custody exit is available because " + source.reason
+			}
 			state.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "no-mistakes axi status"}
 			return
 		}
@@ -2541,6 +2591,10 @@ type recoverySourceProof struct {
 	archive        *db.RecoveryArchive
 	safety         string
 	err            string
+	// divergence carries the complete evidence for the acknowledged exit
+	// (issue #233); reason names the first missing fact when there is none.
+	divergence *terminalDivergence
+	reason     string
 }
 
 func (proof recoverySourceProof) apply(state State) State {
@@ -2736,10 +2790,16 @@ func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run
 			}
 		}
 	}
-	return unavailableRecoverySource(
+	divergence, reason := s.discoverTerminalDivergence(ctx, *state, run)
+	if divergence != nil {
+		return recoverySourceProof{safety: SafetyUnprovenDivergence, divergence: divergence}
+	}
+	proof := unavailableRecoverySource(
 		"blocked_recover_manual_reconciliation",
 		"the run finished "+string(run.Status)+" but its preserved recovery evidence cannot be used safely; inspect and reconcile the recorded and live heads manually",
 	)
+	proof.reason = reason
+	return proof
 }
 
 // verifyKeepLocalPushTarget checks the published binding without importing or
