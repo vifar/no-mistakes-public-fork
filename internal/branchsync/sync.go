@@ -2572,7 +2572,10 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 				return
 			}
 			state.Safety = "blocked_recover_manual_reconciliation"
-			state.Error = "the run finished " + string(run.Status) + " but its preserved recovery evidence cannot be used safely; inspect and reconcile the recorded and live heads manually"
+			state.Error = source.err
+			if state.Error == "" {
+				state.Error = "the run finished " + string(run.Status) + " but its preserved recovery evidence cannot be used safely; inspect and reconcile the recorded and live heads manually"
+			}
 			if source.reason != "" {
 				state.Error += "; no acknowledged custody exit is available because " + source.reason
 			}

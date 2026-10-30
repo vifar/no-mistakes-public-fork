@@ -408,9 +408,10 @@ func TestTerminalDivergenceFailsClosedNamingTheMissingProof(t *testing.T) {
 	t.Parallel()
 	shape := terminalDivergenceShapes[1]
 	cases := []struct {
-		name   string
-		mutate func(f *terminalDivergenceFixture)
-		want   string
+		name            string
+		mutate          func(f *terminalDivergenceFixture)
+		want            string
+		wantRefConflict bool
 		// localHead and gateHead return the heads the mutation left, so the
 		// no-mutation check compares against them.
 		localHead func(f *terminalDivergenceFixture) string
@@ -449,6 +450,22 @@ func TestTerminalDivergenceFailsClosedNamingTheMissingProof(t *testing.T) {
 			gateHead: func(f *terminalDivergenceFixture) string { return f.base },
 		},
 		{
+			name: "gate_anchor_points_at_another_commit",
+			mutate: func(f *terminalDivergenceFixture) {
+				mustRun(f.t, f.gate, "update-ref", f.anchorRef(), f.base)
+			},
+			want:            "recovery ref",
+			wantRefConflict: true,
+		},
+		{
+			name: "gate_anchor_is_symbolic",
+			mutate: func(f *terminalDivergenceFixture) {
+				mustRun(f.t, f.gate, "symbolic-ref", f.anchorRef(), "refs/heads/feature/recover")
+			},
+			want:            "recovery ref",
+			wantRefConflict: true,
+		},
+		{
 			name: "run_published_a_head",
 			mutate: func(f *terminalDivergenceFixture) {
 				if err := f.db.UpdateRunPushBinding(f.run.ID, db.PushBinding{
@@ -480,6 +497,12 @@ func TestTerminalDivergenceFailsClosedNamingTheMissingProof(t *testing.T) {
 			if state.Safety == "blocked_recover_manual_reconciliation" && !strings.Contains(state.Error, tc.want) {
 				t.Fatalf("manual refusal does not name %q: %q", tc.want, state.Error)
 			}
+			if tc.wantRefConflict {
+				want := fmt.Sprintf("the local gate recovery ref %s conflicts with recorded pipeline head %s", f.anchorRef(), f.preserved)
+				if state.Safety != "blocked_recover_manual_reconciliation" || !strings.Contains(state.Error, want) {
+					t.Fatalf("conflicting-ref refusal does not name %q: %s (%s)", want, state.Safety, state.Error)
+				}
+			}
 			for _, request := range []CustodyExitRequest{
 				{Mode: CustodyExitAdoptPreserved, Acknowledge: f.submitted},
 				{Mode: CustodyExitKeepLocal, Acknowledge: f.preserved},
@@ -487,6 +510,9 @@ func TestTerminalDivergenceFailsClosedNamingTheMissingProof(t *testing.T) {
 				refused := f.service.ExitTerminalDivergence(f.ctx, request)
 				if refused.Recovered || refused.Safety != "blocked_recover_acknowledgement_not_applicable" {
 					t.Fatalf("%s exit = %s recovered=%v (%s)", request.Mode, refused.Safety, refused.Recovered, refused.Error)
+				}
+				if state.Safety == "blocked_recover_manual_reconciliation" && !strings.Contains(refused.Error, state.Error) {
+					t.Fatalf("%s exit lost the status diagnostic %q: %q", request.Mode, state.Error, refused.Error)
 				}
 			}
 			if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != wantLocal {
