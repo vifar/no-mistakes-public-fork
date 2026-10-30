@@ -360,6 +360,11 @@ func (s *Service) ExitTerminalDivergence(ctx context.Context, request CustodyExi
 	}
 	var result State
 	if request.Mode == CustodyExitKeepLocal {
+		localAnchor := custody.RecoveryLocalRef(run.ID)
+		if err := custody.PreserveRecoveryAnchor(ctx, s.workDir(), localAnchor, divergence.local); err != nil {
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", fmt.Sprintf("the submitted local head could not be anchored before returning custody: %v; no files or branch refs were changed; custody was not recorded", err))
+		}
+		exit.Anchors = append(exit.Anchors, localAnchor)
 		exit.KeptHead = divergence.local
 		result = s.recoverKeepLocalAtCurrentHead(ctx, run, state, []string{run.ID}, []string{run.HeadSHA}, exit)
 	} else {
