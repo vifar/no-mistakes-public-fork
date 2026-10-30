@@ -1118,7 +1118,7 @@ This value comes only from the trusted default-branch copy, regardless of [`allo
 
 ### rebase.strategy
 
-How the [Rebase step](/no-mistakes/reference/pipeline-steps/#rebase) integrates a base branch that moved under the gated branch.
+How the [Rebase step](/no-mistakes/reference/pipeline-steps/#rebase) performs an integration selected by [`rebase.integrate`](#rebaseintegrate).
 
 | | |
 |---|---|
@@ -1131,7 +1131,7 @@ rebase:
   strategy: merge
 ```
 
-**Opting in.** Commit that block to your **default branch** (the same copy the daemon reads `commands` and `agent` from). It takes effect on the next run of every branch in the repository; a branch cannot opt itself in or out. The default stays `rebase` for every repository that does not ask, so upgrading no-mistakes never changes the shape of history under you.
+**Opting in.** Commit that block to your **default branch** (the same copy the daemon reads `commands` and `agent` from). It takes effect on the next run of every branch in the repository; a branch cannot opt itself in or out.
 
 - **`rebase` (default)** replays the branch's commits on top of the new base. This is the historical behavior and is unchanged.
 - **`merge`** integrates the base with a `git merge --no-ff` commit whose **first parent** is the head the pipeline reviewed.
