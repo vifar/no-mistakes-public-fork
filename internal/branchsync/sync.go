@@ -842,7 +842,13 @@ func (s *Service) RecoverAtHead(ctx context.Context, keepLocal bool, authoritati
 	return s.Recover(ctx, keepLocal)
 }
 
-func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
+func (s *Service) Recover(ctx context.Context, keepLocal bool) (result State) {
+	lock, refusal := s.acquireCustodyRecoveryLock()
+	if refusal != nil {
+		return *refusal
+	}
+	defer releaseCustodyRecoveryLock(lock, &result)
+
 	if refusal, blocked := s.gateContextRefusal(ctx); blocked {
 		return refusal
 	}

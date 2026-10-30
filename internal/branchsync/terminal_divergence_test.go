@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -765,46 +764,95 @@ func TestTerminalDivergenceAdoptRollsBackDirtyWorktreeAndCanRetry(t *testing.T) 
 	}
 }
 
-func TestTerminalDivergenceStaleAdoptCannotUndoCompletedExit(t *testing.T) {
+func TestTerminalDivergenceConcurrentExitRefusesBeforeMutation(t *testing.T) {
+	t.Parallel()
+	for _, gateAlreadyPreserved := range []bool{false, true} {
+		for _, mode := range []CustodyExitMode{CustodyExitAdoptPreserved, CustodyExitKeepLocal} {
+			t.Run(fmt.Sprintf("gate_preserved=%v/%s", gateAlreadyPreserved, mode), func(t *testing.T) {
+				t.Parallel()
+				f := newTerminalDivergenceFixture(t, terminalDivergenceShapes[1])
+				if gateAlreadyPreserved {
+					mustRun(t, f.gate, "update-ref", "refs/heads/feature/recover", f.preserved)
+				}
+				var contended bool
+				f.service.beforeRecoverWorktreeMove = func() {
+					f.service.beforeRecoverWorktreeMove = nil
+					request := CustodyExitRequest{Mode: mode, Acknowledge: f.submitted, Invoker: "invocation-B"}
+					if mode == CustodyExitKeepLocal {
+						request.Acknowledge = f.preserved
+					}
+					refused := f.service.ExitTerminalDivergence(f.ctx, request)
+					if refused.Recovered || refused.Changed || refused.Safety != "blocked_recover_in_progress" || refused.NextAction != nil {
+						t.Fatalf("competing invocation = %#v", refused)
+					}
+					for _, keepLocal := range []bool{false, true} {
+						if state := f.service.Recover(f.ctx, keepLocal); state.Safety != "blocked_recover_in_progress" || state.Recovered || state.Changed {
+							t.Fatalf("plain recovery entered half-finished exit: %#v", state)
+						}
+					}
+					if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+						t.Fatalf("competing exit moved local HEAD: %s", got)
+					}
+					if got := f.gateBranch(); got != f.preserved {
+						t.Fatalf("competing exit moved A's gate head: %s", got)
+					}
+					if f.custodyReturned() || f.exitRecord() != nil {
+						t.Fatal("competing exit returned custody or wrote a receipt")
+					}
+					contended = true
+				}
+				completed := f.service.ExitTerminalDivergence(f.ctx, CustodyExitRequest{
+					Mode: CustodyExitAdoptPreserved, Acknowledge: f.submitted, Invoker: "invocation-A",
+				})
+				if !contended || !completed.Recovered || !f.custodyReturned() {
+					t.Fatalf("invocation A did not complete after excluding B: %#v", completed)
+				}
+				if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.preserved {
+					t.Fatalf("completed local head = %s", got)
+				}
+				if got := f.gateBranch(); got != f.preserved {
+					t.Fatalf("completed gate head = %s", got)
+				}
+				if exit := f.exitRecord(); exit == nil || exit.Invoker != "invocation-A" || exit.KeptHead != f.preserved {
+					t.Fatalf("invocation A receipt = %#v", exit)
+				}
+			})
+		}
+	}
+}
+
+func TestTerminalDivergenceHeldLockRefusesPlainRecovery(t *testing.T) {
 	t.Parallel()
 	f := newTerminalDivergenceFixture(t, terminalDivergenceShapes[1])
-	mustRun(t, f.gate, "update-ref", "refs/heads/feature/recover", f.preserved)
-	var completedExit *db.CustodyExit
-	f.service.beforeRecoverWorktreeMove = func() {
-		f.service.beforeRecoverWorktreeMove = nil
-		completed := f.service.ExitTerminalDivergence(f.ctx, CustodyExitRequest{
-			Mode: CustodyExitAdoptPreserved, Acknowledge: f.submitted, Invoker: "invocation-A",
-		})
-		if !completed.Recovered {
-			t.Fatalf("invocation A did not complete: %#v", completed)
-		}
-		completedExit = f.exitRecord()
-		if completedExit == nil || completedExit.Invoker != "invocation-A" || completedExit.KeptHead != f.preserved {
-			t.Fatalf("invocation A receipt = %#v", completedExit)
-		}
+	lock, refusal := f.service.acquireCustodyRecoveryLock()
+	if refusal != nil || lock == nil {
+		t.Fatalf("acquire lock: %#v", refusal)
 	}
-	stale := f.service.ExitTerminalDivergence(f.ctx, CustodyExitRequest{
-		Mode: CustodyExitAdoptPreserved, Acknowledge: f.submitted, Invoker: "invocation-B",
+	t.Cleanup(func() {
+		var result State
+		releaseCustodyRecoveryLock(lock, &result)
+		if result.Error != "" {
+			t.Error(result.Error)
+		}
 	})
-	if stale.Recovered || stale.Changed || stale.Safety != "blocked_recover_assumptions_changed" {
-		t.Fatalf("stale invocation B = %#v", stale)
+	for _, keepLocal := range []bool{false, true} {
+		state := f.service.Recover(f.ctx, keepLocal)
+		if state.Recovered || state.Changed || state.Safety != "blocked_recover_in_progress" || state.NextAction != nil {
+			t.Fatalf("Recover(%v) with held lock = %#v", keepLocal, state)
+		}
+		f.assertUntouched()
 	}
-	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.preserved {
-		t.Fatalf("stale invocation undid A's local branch: %s", got)
+	var released State
+	releaseCustodyRecoveryLock(lock, &released)
+	lock = nil
+	if released.Error != "" {
+		t.Fatal(released.Error)
 	}
-	if got := f.gateBranch(); got != f.preserved {
-		t.Fatalf("stale invocation undid A's gate branch: %s", got)
+	request := CustodyExitRequest{Mode: CustodyExitKeepLocal, Acknowledge: f.preserved}
+	if state := f.service.ExitTerminalDivergence(f.ctx, request); !state.Recovered {
+		t.Fatalf("closed lock did not release recovery: %#v", state)
 	}
-	if got := mustRun(t, f.local, "status", "--porcelain"); got != "" {
-		t.Fatalf("stale invocation changed A's worktree: %s", got)
-	}
-	if got := readOptional(t, filepath.Join(f.local, "fix.txt")); got != "review fix\n" {
-		t.Fatalf("stale invocation undid A's adopted content: %q", got)
-	}
-	if !f.custodyReturned() {
-		t.Fatal("stale invocation revoked A's custody return")
-	}
-	if got := f.exitRecord(); completedExit == nil || !reflect.DeepEqual(got, completedExit) {
-		t.Fatalf("stale invocation changed A's receipt: got %#v, want %#v", got, completedExit)
+	if state := f.service.Recover(f.ctx, false); !state.Recovered {
+		t.Fatalf("completed exit did not release recovery: %#v", state)
 	}
 }

@@ -304,7 +304,13 @@ func describeCommits(commits []db.CustodyExitCommit, total int) string {
 // set aside: the preserved head for keep-local, the submitted local head for
 // adopt. Repeating a completed exit is an idempotent no-op that records
 // nothing.
-func (s *Service) ExitTerminalDivergence(ctx context.Context, request CustodyExitRequest) State {
+func (s *Service) ExitTerminalDivergence(ctx context.Context, request CustodyExitRequest) (result State) {
+	lock, refusal := s.acquireCustodyRecoveryLock()
+	if refusal != nil {
+		return *refusal
+	}
+	defer releaseCustodyRecoveryLock(lock, &result)
+
 	if refusal, blocked := s.gateContextRefusal(ctx); blocked {
 		return refusal
 	}
@@ -358,7 +364,6 @@ func (s *Service) ExitTerminalDivergence(ctx context.Context, request CustodyExi
 	if blocked, ok := s.anchorPreservedInWorktree(ctx, state, divergence); !ok {
 		return blocked
 	}
-	var result State
 	if request.Mode == CustodyExitKeepLocal {
 		localAnchor := custody.RecoveryLocalRef(run.ID)
 		if err := custody.PreserveRecoveryAnchor(ctx, s.workDir(), localAnchor, divergence.local); err != nil {
@@ -411,7 +416,6 @@ func (s *Service) anchorPreservedInWorktree(ctx context.Context, state State, d 
 // Each invocation rolls back only its own outstanding successful compare-and-swaps.
 // At most one concurrent invocation can win each submitted-to-preserved swap;
 // a stale invocation cannot undo the winner's exit merely by observing its head.
-// Those swaps serialize the destructive moves without a cross-process lock.
 func (s *Service) adoptTerminalDivergence(ctx context.Context, run *db.Run, state State, d *terminalDivergence, exit *db.CustodyExit) State {
 	branchRef := "refs/heads/" + d.branch
 	gateMoved := false
