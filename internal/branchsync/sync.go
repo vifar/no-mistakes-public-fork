@@ -1519,6 +1519,8 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 
 // adoptPreservedHead performs recoverAdoptPreserved's guarded move without
 // stamping custody, reporting whether the clean worktree reached preserved.
+// The final return value reports an outstanding local branch CAS made by this
+// call, so the caller can roll back only a move it owns.
 // containmentSettled skips the merge proof only for a caller that already
 // settled containment: proved it, or recorded the operator's acknowledgement of
 // what is left unproven (ExitTerminalDivergence).
@@ -1573,8 +1575,9 @@ func (s *Service) adoptPreservedHead(ctx context.Context, run *db.Run, state Sta
 	// KNOWN BOUNDED FUNDAMENTAL-GIT LIMITATION: a concurrent git checkout
 	// landing between this branch-identity verification and the read-tree
 	// working-tree update can apply the preserved tree to another branch's
-	// worktree. This is not data loss: containment is proven before the move,
-	// the pre-recovery head stays anchored at
+	// worktree. Ordinary recovery proves containment before the move;
+	// acknowledged recovery instead preserves both divergent histories. In
+	// either case the pre-recovery head stays anchored at
 	// refs/no-mistakes/recover-local/<run>, custody is never stamped, and the
 	// operation fails closed to a reported failure rather than a false success.
 	// The window is sub-millisecond and inside a worktree the pipeline already

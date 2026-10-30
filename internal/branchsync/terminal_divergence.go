@@ -413,6 +413,10 @@ func (s *Service) anchorPreservedInWorktree(ctx context.Context, state State, d 
 // The worktree move is adoptPreservedHead's: the submitted head is anchored at
 // refs/no-mistakes/recover-local/<run>, and the branch moves by an atomic
 // compare-and-swap plus a read-tree that refuses to overwrite local changes.
+// ExitTerminalDivergence holds the gate's custody-recovery lock across discovery,
+// both moves, receipt settlement and rollback; Recover takes the same lock so
+// it cannot stamp custody during a half-finished exit. Ownership-scoped rollback
+// remains defense in depth:
 // Each invocation rolls back only its own outstanding successful compare-and-swaps.
 // At most one concurrent invocation can win each submitted-to-preserved swap;
 // a stale invocation cannot undo the winner's exit merely by observing its head.

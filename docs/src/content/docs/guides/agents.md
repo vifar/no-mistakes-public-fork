@@ -181,7 +181,7 @@ no-mistakes axi abort
 no-mistakes axi abort --run <id>
 ```
 
-Before any post-pipeline local commit or fresh run, read `branch_sync` and follow its exact `next_action.command`.
+Before any post-pipeline local commit or fresh run, read `branch_sync`; the skill owns how to act on its `next_action.command`, including `choose_custody_exit` choices that require the branch owner's decision.
 A `sync` action runs `no-mistakes axi sync` first.
 For `recover_custody`, follow the exact reported command; the [custody recovery reference](/no-mistakes/reference/cli/#custody-recovery) owns the preservation proofs and keep-local choices. See [`no-mistakes rerun`](/no-mistakes/reference/cli/#no-mistakes-rerun) for the alternative validation path and its refusal conditions.
 A `recover_remote_rewritten` action runs exact `no-mistakes axi sync --recover`; afterwards follow its reported `next_action`. See [rewritten push target recovery](/no-mistakes/reference/cli/#rewritten-push-target-recovery) for the anchoring, rebind, mirror reporting, and refusal conditions.

@@ -53,6 +53,8 @@ An unset, unparsable, or non-positive value keeps the default. The cap never sho
 
 Optional session/thread ID or person responsible for driving a new run's approval gates. `axi run` and `rerun` read it in the launching CLI and send it to the daemon; `axi abort` also reads it to identify the cancellation caller. The daemon does not read its own environment to guess a caller. `--owner` takes precedence, including an explicitly empty value. See [launch owner](/no-mistakes/reference/cli/#launch-owner) for ownership semantics, global [`intent.require_owner`](/no-mistakes/reference/global-config/#intent) for ownerless-launch policy, and [`axi abort`](/no-mistakes/reference/cli/#no-mistakes-axi-abort) for cancellation attribution and fallback.
 
+An [acknowledged custody exit](/no-mistakes/reference/cli/#custody-recovery) also reads this variable in the invoking CLI to record the invoker alongside the OS account. When unset or whitespace-only, the receipt records only the OS account; an unavailable account is recorded as `unknown`. This attribution does not change the run's launch owner.
+
 A launching agent should set this to its actual known identity. For example, in a Codex environment that exposes `CODEX_THREAD_ID`:
 
 ```sh
