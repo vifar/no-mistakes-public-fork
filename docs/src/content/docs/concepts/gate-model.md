@@ -336,8 +336,9 @@ submissions do not receive this exception.
 **Recorded supersession:** a fresh submission can also reach a settled state for
 a mirror left stranded by a terminal run. After a rebase, such a run can leave the
 mirror ref on its superseded pre-rebase lineage, where the containment check
-correctly refuses and every recovery command is a no-op - the branch is stranded
-even though its work is intact. For that case a submission may replace the
+refuses. Available recovery paths are owned by
+[Custody recovery](/no-mistakes/reference/cli/#custody-recovery).
+For that case a submission may replace the
 private head when this repository's own run records prove it superseded: one
 terminal run on this branch that already returned custody
 (`CustodyReturnedAt`), that submitted **exactly** the private head

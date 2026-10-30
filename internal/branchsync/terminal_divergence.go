@@ -254,7 +254,7 @@ func (d *terminalDivergence) apply(state State) State {
 }
 
 // divergenceNoteLimit bounds how many commits the note names per side. The
-// structured lists in RecoveryEvidence carry every listed commit.
+// structured lists in RecoveryEvidence carry every divergent commit.
 const divergenceNoteLimit = 20
 
 // describeCommits renders one side for the note: every commit with no patch-ID
@@ -401,8 +401,10 @@ func (s *Service) anchorPreservedInWorktree(ctx context.Context, state State, d 
 // adoptTerminalDivergence moves the gate branch, then the worktree, to the
 // preserved head. The gate moves first so the next launch is not refused by a
 // private mirror still at the submitted head (#163); its old head is anchored
-// at refs/no-mistakes/recover-gate/<run> before the compare-and-swap, and the
-// swap is reversed when the worktree move does not reach the preserved head.
+// at refs/no-mistakes/recover-gate/<run> before the compare-and-swap.
+// restorePreExit attempts guarded restoration of both branches and the worktree
+// on any unsuccessful adoption after either branch moves, including a failed
+// custody/receipt write. It retains all anchors and reports restoration failures.
 // The worktree move is adoptPreservedHead's: the submitted head is anchored at
 // refs/no-mistakes/recover-local/<run>, and the branch moves by an atomic
 // compare-and-swap plus a read-tree that refuses to overwrite local changes.

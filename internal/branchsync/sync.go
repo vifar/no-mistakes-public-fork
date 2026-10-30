@@ -141,8 +141,8 @@ type RecoveryEvidence struct {
 	ArchiveRef    string
 	KeepLocal     bool
 	Proof         string
-	// LocalOnly and PreservedOnly name the commits each head lacks, for the
-	// terminal_divergence exit only; the totals count past the listing bound.
+	// LocalOnly and PreservedOnly name every commit each head lacks, for the
+	// terminal_divergence exit only; the totals count those complete lists.
 	LocalOnly          []db.CustodyExitCommit
 	PreservedOnly      []db.CustodyExitCommit
 	LocalOnlyTotal     int
@@ -741,6 +741,12 @@ func (s *Service) BindRecoveryArchive(ctx context.Context, archiveRef string) St
 //	                     reconcile / guarded rerun)     gate reset to it (CAS)
 //	P missing  any       refuse                         custody at local head;
 //	                                                    gate reset to it (CAS)
+//
+// The unproven-divergence row has a narrower exception: for a run that published
+// nothing and whose local head still equals its submitted head, both plain recovery and
+// plain keep-local refuse. Complete evidence offers ExitTerminalDivergence;
+// missing or conflicting evidence requires manual reconciliation. The CLI
+// reference above owns the acknowledged choices and their prerequisites.
 //
 // The containment row exists because a cancelled validation routinely leaves P
 // as a REBASE of the local branch onto a newer base: the same logical commits
