@@ -415,30 +415,34 @@ func (s *Service) adoptTerminalDivergence(ctx context.Context, run *db.Run, stat
 	}
 	moved, ok := s.adoptPreservedHead(ctx, run, state, d.preserved, true)
 	if !ok {
-		// Restore the gate unless the local branch did reach the preserved
-		// head, in which case the gate already matches it.
-		if localHead, err := git.Run(ctx, s.workDir(), "rev-parse", branchRef); gateMoved && (err != nil || localHead != d.preserved) {
-			if _, err := git.Run(context.WithoutCancel(ctx), s.GateDir, "update-ref", branchRef, d.gateHead, d.preserved); err != nil {
-				moved.Error += fmt.Sprintf("; the gate branch could not be restored from %s to %s", d.preserved, d.gateHead)
-			} else {
-				moved.Error += "; the gate branch was restored to its exact pre-recovery head"
-			}
-		}
-		return moved
+		return s.restorePreExit(ctx, d, gateMoved, moved)
 	}
 	result := s.finishRecover(ctx, run, true, exit)
 	if result.Recovered {
 		return result
 	}
+	return s.restorePreExit(ctx, d, gateMoved, result)
+}
+
+func (s *Service) restorePreExit(ctx context.Context, d *terminalDivergence, gateMoved bool, result State) State {
 	rollbackCtx := context.WithoutCancel(ctx)
-	if _, err := git.Run(rollbackCtx, s.workDir(), "update-ref", branchRef, d.local, d.preserved); err != nil {
-		result.Error += fmt.Sprintf("; the local branch could not be restored from %s to %s", d.preserved, d.local)
-	} else {
-		if _, err := git.Run(rollbackCtx, s.workDir(), "read-tree", "-m", "-u", d.preserved, d.local); err != nil {
+	branchRef := "refs/heads/" + d.branch
+	localHead, err := git.Run(rollbackCtx, s.workDir(), "rev-parse", "--verify", branchRef)
+	switch {
+	case err != nil:
+		result.Error += "; the local branch could not be inspected for restoration"
+	case localHead == d.preserved:
+		if _, err := git.Run(rollbackCtx, s.workDir(), "update-ref", branchRef, d.local, d.preserved); err != nil {
+			result.Error += fmt.Sprintf("; the local branch could not be restored from %s to %s", d.preserved, d.local)
+		} else if _, err := git.Run(rollbackCtx, s.workDir(), "read-tree", "-m", "-u", d.preserved, d.local); err != nil {
 			result.Error += "; the local branch was restored but the worktree could not be restored"
 		} else {
 			result.Error += "; the local branch and worktree were restored to the submitted head"
 		}
+	case localHead == d.local:
+		result.Error += "; the local branch is already at the submitted head; the worktree was left untouched"
+	default:
+		result.Error += fmt.Sprintf("; the local branch is at %s instead of %s; the branch and worktree were left untouched", localHead, d.preserved)
 	}
 	if gateMoved {
 		if _, err := git.Run(rollbackCtx, s.GateDir, "update-ref", branchRef, d.gateHead, d.preserved); err != nil {

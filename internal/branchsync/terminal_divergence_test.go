@@ -2,6 +2,7 @@ package branchsync
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -662,5 +663,77 @@ func TestTerminalDivergenceListsEveryCommitInStatusAndReceipt(t *testing.T) {
 		if _, ok := commitNamed(exit.PreservedOnly, sha); !ok {
 			t.Fatalf("receipt omitted preserved commit %s", sha)
 		}
+	}
+}
+
+func TestTerminalDivergenceAdoptRollsBackDirtyWorktreeAndCanRetry(t *testing.T) {
+	t.Parallel()
+	for _, gateAlreadyPreserved := range []bool{false, true} {
+		t.Run(fmt.Sprint(gateAlreadyPreserved), func(t *testing.T) {
+			t.Parallel()
+			f := newTerminalDivergenceFixture(t, terminalDivergenceShapes[1])
+			wantGate := f.submitted
+			if gateAlreadyPreserved {
+				wantGate = f.preserved
+				mustRun(t, f.gate, "update-ref", "refs/heads/feature/recover", wantGate)
+			}
+			unrelated := filepath.Join(f.local, "unrelated.txt")
+			f.service.afterRecoverBranchMove = func() {
+				mustWrite(t, unrelated, "unrelated work\n")
+			}
+			request := CustodyExitRequest{Mode: CustodyExitAdoptPreserved, Acknowledge: f.submitted, Invoker: "test-owner"}
+			refused := f.service.ExitTerminalDivergence(f.ctx, request)
+			if refused.Recovered || refused.Changed {
+				t.Fatalf("dirty adoption = %#v, want refusal with branch restored", refused)
+			}
+			if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+				t.Fatalf("local HEAD = %s, want submitted %s", got, f.submitted)
+			}
+			if got := f.gateBranch(); got != wantGate {
+				t.Fatalf("gate branch = %s, want pre-exit %s", got, wantGate)
+			}
+			if got := readOptional(t, unrelated); got != "unrelated work\n" {
+				t.Fatalf("unrelated work changed: %q", got)
+			}
+			if got := readOptional(t, filepath.Join(f.local, "file.txt")); got != "lane change\nline two\n" {
+				t.Fatalf("submitted worktree content was not restored: %q", got)
+			}
+			if f.custodyReturned() || f.exitRecord() != nil {
+				t.Fatal("unsuccessful adoption returned custody or recorded an exit")
+			}
+			for _, dir := range []string{f.local, f.gate} {
+				if got := mustRun(t, dir, "rev-parse", f.anchorRef()); got != f.preserved {
+					t.Fatalf("%s lost preserved anchor: %s", dir, got)
+				}
+			}
+			if got := mustRun(t, f.local, "rev-parse", f.localAnchorRef()); got != f.submitted {
+				t.Fatalf("lost local anchor: %s", got)
+			}
+			if !gateAlreadyPreserved {
+				if got := mustRun(t, f.gate, "rev-parse", custody.RecoveryGateRef(f.run.ID)); got != f.submitted {
+					t.Fatalf("lost gate anchor: %s", got)
+				}
+			}
+			if err := os.Remove(unrelated); err != nil {
+				t.Fatal(err)
+			}
+			f.service.afterRecoverBranchMove = nil
+			if state := f.service.InspectCached(f.ctx); state.Safety != SafetyUnprovenDivergence {
+				t.Fatalf("after rollback and removing unrelated work: %#v", state)
+			}
+			retried := f.service.ExitTerminalDivergence(f.ctx, request)
+			if !retried.Recovered || !retried.Changed || !f.custodyReturned() {
+				t.Fatalf("same acknowledged adoption could not be retried: %#v", retried)
+			}
+			if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.preserved {
+				t.Fatalf("retry local HEAD = %s, want preserved %s", got, f.preserved)
+			}
+			if got := f.gateBranch(); got != f.preserved {
+				t.Fatalf("retry gate branch = %s, want preserved %s", got, f.preserved)
+			}
+			if exit := f.exitRecord(); exit == nil || exit.Mode != string(request.Mode) || exit.Acknowledged != f.submitted || exit.KeptHead != f.preserved {
+				t.Fatalf("retry receipt = %#v", exit)
+			}
+		})
 	}
 }
