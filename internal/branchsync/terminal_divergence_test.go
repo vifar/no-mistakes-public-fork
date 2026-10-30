@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -761,5 +762,49 @@ func TestTerminalDivergenceAdoptRollsBackDirtyWorktreeAndCanRetry(t *testing.T) 
 				t.Fatalf("retry receipt = %#v", exit)
 			}
 		})
+	}
+}
+
+func TestTerminalDivergenceStaleAdoptCannotUndoCompletedExit(t *testing.T) {
+	t.Parallel()
+	f := newTerminalDivergenceFixture(t, terminalDivergenceShapes[1])
+	mustRun(t, f.gate, "update-ref", "refs/heads/feature/recover", f.preserved)
+	var completedExit *db.CustodyExit
+	f.service.beforeRecoverWorktreeMove = func() {
+		f.service.beforeRecoverWorktreeMove = nil
+		completed := f.service.ExitTerminalDivergence(f.ctx, CustodyExitRequest{
+			Mode: CustodyExitAdoptPreserved, Acknowledge: f.submitted, Invoker: "invocation-A",
+		})
+		if !completed.Recovered {
+			t.Fatalf("invocation A did not complete: %#v", completed)
+		}
+		completedExit = f.exitRecord()
+		if completedExit == nil || completedExit.Invoker != "invocation-A" || completedExit.KeptHead != f.preserved {
+			t.Fatalf("invocation A receipt = %#v", completedExit)
+		}
+	}
+	stale := f.service.ExitTerminalDivergence(f.ctx, CustodyExitRequest{
+		Mode: CustodyExitAdoptPreserved, Acknowledge: f.submitted, Invoker: "invocation-B",
+	})
+	if stale.Recovered || stale.Changed || stale.Safety != "blocked_recover_assumptions_changed" {
+		t.Fatalf("stale invocation B = %#v", stale)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.preserved {
+		t.Fatalf("stale invocation undid A's local branch: %s", got)
+	}
+	if got := f.gateBranch(); got != f.preserved {
+		t.Fatalf("stale invocation undid A's gate branch: %s", got)
+	}
+	if got := mustRun(t, f.local, "status", "--porcelain"); got != "" {
+		t.Fatalf("stale invocation changed A's worktree: %s", got)
+	}
+	if got := readOptional(t, filepath.Join(f.local, "fix.txt")); got != "review fix\n" {
+		t.Fatalf("stale invocation undid A's adopted content: %q", got)
+	}
+	if !f.custodyReturned() {
+		t.Fatal("stale invocation revoked A's custody return")
+	}
+	if got := f.exitRecord(); completedExit == nil || !reflect.DeepEqual(got, completedExit) {
+		t.Fatalf("stale invocation changed A's receipt: got %#v, want %#v", got, completedExit)
 	}
 }

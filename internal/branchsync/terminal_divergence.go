@@ -408,6 +408,10 @@ func (s *Service) anchorPreservedInWorktree(ctx context.Context, state State, d 
 // The worktree move is adoptPreservedHead's: the submitted head is anchored at
 // refs/no-mistakes/recover-local/<run>, and the branch moves by an atomic
 // compare-and-swap plus a read-tree that refuses to overwrite local changes.
+// Each invocation rolls back only its own outstanding successful compare-and-swaps.
+// At most one concurrent invocation can win each submitted-to-preserved swap;
+// a stale invocation cannot undo the winner's exit merely by observing its head.
+// Those swaps serialize the destructive moves without a cross-process lock.
 func (s *Service) adoptTerminalDivergence(ctx context.Context, run *db.Run, state State, d *terminalDivergence, exit *db.CustodyExit) State {
 	branchRef := "refs/heads/" + d.branch
 	gateMoved := false
@@ -420,25 +424,24 @@ func (s *Service) adoptTerminalDivergence(ctx context.Context, run *db.Run, stat
 		}
 		gateMoved = true
 	}
-	moved, ok := s.adoptPreservedHead(ctx, run, state, d.preserved, true)
+	moved, ok, localMoved := s.adoptPreservedHead(ctx, run, state, d.preserved, true)
 	if !ok {
-		return s.restorePreExit(ctx, d, gateMoved, moved)
+		return s.restorePreExit(ctx, d, localMoved, gateMoved, moved)
 	}
 	result := s.finishRecover(ctx, run, true, exit)
 	if result.Recovered {
 		return result
 	}
-	return s.restorePreExit(ctx, d, gateMoved, result)
+	return s.restorePreExit(ctx, d, localMoved, gateMoved, result)
 }
 
-func (s *Service) restorePreExit(ctx context.Context, d *terminalDivergence, gateMoved bool, result State) State {
+func (s *Service) restorePreExit(ctx context.Context, d *terminalDivergence, localMoved, gateMoved bool, result State) State {
+	if !localMoved && !gateMoved {
+		return result
+	}
 	rollbackCtx := context.WithoutCancel(ctx)
 	branchRef := "refs/heads/" + d.branch
-	localHead, err := git.Run(rollbackCtx, s.workDir(), "rev-parse", "--verify", branchRef)
-	switch {
-	case err != nil:
-		result.Error += "; the local branch could not be inspected for restoration"
-	case localHead == d.preserved:
+	if localMoved {
 		if _, err := git.Run(rollbackCtx, s.workDir(), "update-ref", branchRef, d.local, d.preserved); err != nil {
 			result.Error += fmt.Sprintf("; the local branch could not be restored from %s to %s", d.preserved, d.local)
 		} else if _, err := git.Run(rollbackCtx, s.workDir(), "read-tree", "-m", "-u", d.preserved, d.local); err != nil {
@@ -446,10 +449,6 @@ func (s *Service) restorePreExit(ctx context.Context, d *terminalDivergence, gat
 		} else {
 			result.Error += "; the local branch and worktree were restored to the submitted head"
 		}
-	case localHead == d.local:
-		result.Error += "; the local branch is already at the submitted head; the worktree was left untouched"
-	default:
-		result.Error += fmt.Sprintf("; the local branch is at %s instead of %s; the branch and worktree were left untouched", localHead, d.preserved)
 	}
 	if gateMoved {
 		if _, err := git.Run(rollbackCtx, s.GateDir, "update-ref", branchRef, d.gateHead, d.preserved); err != nil {

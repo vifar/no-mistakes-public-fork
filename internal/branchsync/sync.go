@@ -1504,7 +1504,7 @@ func reviewedHeadProvesEquivalentTarget(ctx context.Context, dir, local, reviewe
 // and the pre-recovery head stays anchored. Custody is stamped only after the
 // whole move is verified.
 func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state State, preserved string, containmentProven bool) State {
-	moved, ok := s.adoptPreservedHead(ctx, run, state, preserved, containmentProven)
+	moved, ok, _ := s.adoptPreservedHead(ctx, run, state, preserved, containmentProven)
 	if !ok {
 		return moved
 	}
@@ -1516,7 +1516,7 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 // containmentSettled skips the merge proof only for a caller that already
 // settled containment: proved it, or recorded the operator's acknowledgement of
 // what is left unproven (ExitTerminalDivergence).
-func (s *Service) adoptPreservedHead(ctx context.Context, run *db.Run, state State, preserved string, containmentSettled bool) (State, bool) {
+func (s *Service) adoptPreservedHead(ctx context.Context, run *db.Run, state State, preserved string, containmentSettled bool) (State, bool, bool) {
 	if s.beforeRecoverWorktreeMove != nil {
 		s.beforeRecoverWorktreeMove()
 	}
@@ -1525,12 +1525,12 @@ func (s *Service) adoptPreservedHead(ctx context.Context, run *db.Run, state Sta
 	head, headErr := git.HeadSHA(ctx, wd)
 	clean, _ := worktreeClean(ctx, wd)
 	if branchErr != nil || branch != state.Local.Branch || headErr != nil || head != state.Local.Head || !clean {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the local branch or worktree changed while custody was being returned; no files or refs were changed"), false
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the local branch or worktree changed while custody was being returned; no files or refs were changed"), false, false
 	}
 	// The containment proof runs before the anchor and the move so that no
 	// slow work sits between the last guard and the mutation.
 	if !containmentSettled && !preservedContainsLocalWork(ctx, wd, head, preserved) {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the containment proof changed while custody was being returned; no files or refs were changed"), false
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the containment proof changed while custody was being returned; no files or refs were changed"), false, false
 	}
 	localAnchor := recoverLocalAnchorRef(run.ID)
 	// Create-only: an empty old value requires the ref not to exist. A resumed
@@ -1538,15 +1538,15 @@ func (s *Service) adoptPreservedHead(ctx context.Context, run *db.Run, state Sta
 	// at any other commit is unexplained and refuses.
 	existingAnchor, existingErr := git.Run(ctx, wd, "rev-parse", "--verify", localAnchor+"^{commit}")
 	if existingErr == nil && existingAnchor != head {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the pre-recovery local head could not be anchored; no files or refs were changed"), false
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the pre-recovery local head could not be anchored; no files or refs were changed"), false, false
 	}
 	if existingErr != nil {
 		if err := custody.PreserveRecoveryAnchor(ctx, wd, localAnchor, head); err != nil {
-			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the pre-recovery local head could not be anchored; no files or refs were changed"), false
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the pre-recovery local head could not be anchored; no files or refs were changed"), false, false
 		}
 	}
 	if anchored, err := git.Run(ctx, wd, "rev-parse", localAnchor+"^{commit}"); err != nil || anchored != head {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the pre-recovery local head could not be verified after anchoring; no files or worktree refs were changed"), false
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the pre-recovery local head could not be verified after anchoring; no files or worktree refs were changed"), false, false
 	}
 
 	if s.beforeRecoverBranchMove != nil {
@@ -1555,11 +1555,12 @@ func (s *Service) adoptPreservedHead(ctx context.Context, run *db.Run, state Sta
 	branchRef := "refs/heads/" + state.Local.Branch
 	boundaryBranch, boundaryErr := git.CurrentBranch(ctx, wd)
 	if boundaryErr != nil || boundaryBranch != state.Local.Branch {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the checked-out branch changed while custody was being returned; no branch or worktree changes were made"), false
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the checked-out branch changed while custody was being returned; no branch or worktree changes were made"), false, false
 	}
 	if _, err := git.Run(ctx, wd, "update-ref", branchRef, preserved, head); err != nil {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the local branch moved while custody was being returned; no files or refs were changed"), false
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the local branch moved while custody was being returned; no files or refs were changed"), false, false
 	}
+	localMoved := true
 	if s.afterRecoverBranchMove != nil {
 		s.afterRecoverBranchMove()
 	}
@@ -1580,17 +1581,21 @@ func (s *Service) adoptPreservedHead(ctx context.Context, run *db.Run, state Sta
 		rollbackDetail := ""
 		if _, rollbackErr := git.Run(ctx, wd, "update-ref", branchRef, head, preserved); rollbackErr != nil {
 			rollbackDetail = fmt.Sprintf("; the branch could not be restored to %s and still requires manual reconciliation", head)
+		} else {
+			localMoved = false
 		}
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", fmt.Sprintf("the checked-out branch changed while custody was being returned%s; custody was not recorded", rollbackDetail)), false
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", fmt.Sprintf("the checked-out branch changed while custody was being returned%s; custody was not recorded", rollbackDetail)), false, localMoved
 	}
 	if _, err := git.Run(ctx, wd, "read-tree", "-m", "-u", head, preserved); err != nil {
 		rolledBack := ""
 		if _, rollbackErr := git.Run(ctx, wd, "update-ref", branchRef, head, preserved); rollbackErr != nil {
 			rolledBack = fmt.Sprintf("; the branch could not be restored to %s and now points at %s, whose content the pre-recovery head is contained in", head, preserved)
+		} else {
+			localMoved = false
 		}
 		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_worktree_busy", fmt.Sprintf("the working tree changed while custody was being returned, so no file was overwritten%s; re-run the recovery once the working tree is settled", rolledBack))
 		blocked.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
-		return blocked, false
+		return blocked, false, localMoved
 	}
 
 	finalHead, _ := git.HeadSHA(ctx, wd)
@@ -1602,7 +1607,7 @@ func (s *Service) adoptPreservedHead(ctx context.Context, run *db.Run, state Sta
 	if finalHead != preserved {
 		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_apply_failed", fmt.Sprintf("adopting the preserved pipeline head did not reach it; final HEAD is %s and the pre-recovery head is anchored at %s; inspect the worktree before retrying", finalHead, localAnchor))
 		blocked.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
-		return blocked, false
+		return blocked, false, localMoved
 	}
 	if !finalClean {
 		state.State = StateDirty
@@ -1610,9 +1615,9 @@ func (s *Service) adoptPreservedHead(ctx context.Context, run *db.Run, state Sta
 		state.Safety = "blocked_post_recover_" + finalReason
 		state.Error = fmt.Sprintf("HEAD reached the preserved pipeline head, but the worktree is not clean; nothing was overwritten and the pre-recovery head is anchored at %s; custody was not recorded", localAnchor)
 		state.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
-		return state, false
+		return state, false, localMoved
 	}
-	return state, true
+	return state, true, localMoved
 }
 
 // recoverRemoteRewritten owns Recover's outcome for a terminal run whose push
